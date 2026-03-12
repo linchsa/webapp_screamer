@@ -70,4 +70,4 @@ RUN npx -y playwright install --with-deps chromium
 EXPOSE 3000
 
 # Start script
-CMD ["sh", "-c", "cd /app/backend && npm install && node server.js"]
+CMD ["sh", "-c", "cd /app/backend && rm -rf node_modules package-lock.json && npm install && npm rebuild sqlite3 && node server.js"]

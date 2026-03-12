@@ -40,7 +40,12 @@ ENV PATH=$PATH:/usr/local/go/bin:$GOPATH/bin
 # Install Bug Bounty Tools via Go
 RUN go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
 RUN go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
-RUN go install -v github.com/projectdiscovery/naabu/v2/cmd/naabu@latest
+RUN cd /tmp && \
+    wget https://github.com/projectdiscovery/naabu/releases/download/v2.3.1/naabu_2.3.1_linux_amd64.zip && \
+    unzip naabu_2.3.1_linux_amd64.zip && \
+    mv naabu /usr/local/bin/naabu && \
+    chmod +x /usr/local/bin/naabu && \
+    rm naabu_2.3.1_linux_amd64.zip
 RUN go install -v github.com/projectdiscovery/katana/cmd/katana@latest
 RUN go install -v github.com/projectdiscovery/cdncheck/cmd/cdncheck@latest
 RUN go install -v github.com/lc/gau/v2/cmd/gau@latest

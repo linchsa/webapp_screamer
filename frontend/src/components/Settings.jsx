@@ -98,15 +98,15 @@ export default function Settings() {
 
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
                         <div>
-                            <label style={{ display: 'block', marginBottom: '8px', color: 'var(--text-muted)' }}>Scan Profile (Noise Level)</label>
+                            <label style={{ display: 'block', marginBottom: '8px', color: 'var(--text-muted)' }}>Scan Intensity (Intelligence Depth)</label>
                             <select 
                                 className="glass-input" 
                                 value={settings.scan_profile} 
                                 onChange={(e) => setSettings({...settings, scan_profile: e.target.value})}
                             >
-                                <option value="stealth">Stealth (Slow, minimal noise)</option>
-                                <option value="normal">Normal (Balanced speed and noise)</option>
-                                <option value="aggressive">Aggressive (Fast, highly noisy)</option>
+                                <option value="quick">Quick Win (Panels, Takeovers, Sensitive Configs)</option>
+                                <option value="standard">Standard (Balanced Recon & Vulns)</option>
+                                <option value="full">Full Recon (Aggressive, Extensive Discovery)</option>
                             </select>
                         </div>
                         

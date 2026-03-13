@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Play, Square, Terminal, Network, ShieldAlert, Cpu, Download, Trash2, List, TableProperties } from 'lucide-react';
+import { ArrowLeft, Play, Square, Terminal, Network, ShieldAlert, Cpu, Download, Trash2, List, TableProperties, Eye, X, Database } from 'lucide-react';
 import io from 'socket.io-client';
 
 const API_URL = 'http://localhost:3000';
@@ -18,6 +18,15 @@ export default function ProjectView() {
     
     // Stats for insights
     const [stats, setStats] = useState({ subdomains: 0, ports: 0, vulns: 0 });
+
+    const [quickFilters, setQuickFilters] = useState({
+        only200: false,
+        onlySecrets: false,
+        onlyParams: false
+    });
+
+    const [viewCode, setViewCode] = useState(null); // { path, content, finding }
+    const [hoveredDomain, setHoveredDomain] = useState(null);
 
     const terminalRef = useRef(null);
     const socketRef = useRef(null);
@@ -172,14 +181,54 @@ export default function ProjectView() {
         }
     };
 
+    const handleViewCode = async (finding) => {
+        let assetPath = '';
+        if (finding.type === 'js_monitoring') assetPath = finding.value;
+        else if (finding.contextObj?.file) assetPath = finding.contextObj.file;
+        else if (finding.context?.includes('assets/')) {
+            const match = finding.context.match(/assets\/([^\s]+)/);
+            if (match) assetPath = match[1];
+        }
+
+        if (!assetPath) {
+            alert("No source file associated with this finding.");
+            return;
+        }
+
+        try {
+            const res = await fetch(`${API_URL}/api/projects/${id}/assets/view?filePath=${encodeURIComponent(assetPath)}`);
+            if (!res.ok) throw new Error("Could not fetch file content");
+            const text = await res.text(); 
+            setViewCode({ path: assetPath, content: text, finding });
+        } catch (err) {
+            alert("Error loading code: " + err.message);
+        }
+    };
+
     // Group findings by domain with filter
-    const filteredFindings = findings.filter(f => 
-        searchTerm === '' || 
-        f.type.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        f.value.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        (f.context && f.context.toLowerCase().includes(searchTerm.toLowerCase())) ||
-        (f.domain && f.domain.toLowerCase().includes(searchTerm.toLowerCase()))
-    );
+    const filteredFindings = findings.filter(f => {
+        // Search term filter
+        const matchesSearch = searchTerm === '' || 
+            f.type?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            f.value?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            (f.context && f.context.toLowerCase().includes(searchTerm.toLowerCase())) ||
+            (f.domain && f.domain.toLowerCase().includes(searchTerm.toLowerCase()));
+        
+        if (!matchesSearch) return false;
+
+        // Quick Filters
+        if (quickFilters.only200) {
+            if (!f.context?.includes('"status":200')) return false;
+        }
+        if (quickFilters.onlySecrets) {
+            if (f.type !== 'secret') return false;
+        }
+        if (quickFilters.onlyParams) {
+            if (f.type !== 'interesting_url') return false;
+        }
+
+        return true;
+    });
 
     const groupedFindings = filteredFindings.reduce((acc, finding) => {
         const d = finding.domain || project?.target || 'Unknown Target';
@@ -224,8 +273,8 @@ export default function ProjectView() {
                 </div>
             </div>
 
-            {/* Tabs & Search */}
-            <div style={{ display: 'flex', gap: '24px', alignItems: 'flex-start' }}>
+            {/* Tabs & Search & Quick Filters */}
+            <div style={{ display: 'flex', gap: '24px', alignItems: 'flex-start', flexWrap: 'wrap' }}>
                 <div className="glass-panel" style={{ display: 'flex', padding: '8px', gap: '8px', width: 'fit-content' }}>
                     <button 
                         className={`glass-btn ${activeTab === 'logs' ? 'primary' : ''}`} 
@@ -241,19 +290,67 @@ export default function ProjectView() {
                     >
                         <TableProperties size={18} /> Discovery Results
                     </button>
+                    <button 
+                        className={`glass-btn ${activeTab === 'map' ? 'primary' : ''}`} 
+                        onClick={() => setActiveTab('map')}
+                        style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 16px', background: activeTab === 'map' ? 'var(--accent-color)' : 'transparent', color: activeTab === 'map' ? '#000' : 'var(--text-main)' }}
+                    >
+                        <Network size={18} /> Target Map
+                    </button>
                 </div>
 
                 {activeTab === 'results' && (
-                    <div className="glass-panel" style={{ flex: 1, padding: '12px 24px', display: 'flex', alignItems: 'center', gap: '16px' }}>
-                         <input
-                            type="text"
-                            className="glass-input"
-                            style={{ padding: '6px 12px', flex: 1, margin: 0 }}
-                            value={searchTerm}
-                            onChange={(e) => setSearchTerm(e.target.value)}
-                            placeholder="Search technology, status, endpoint or secret..."
-                        />
-                    </div>
+                    <>
+                        <div className="glass-panel" style={{ flex: 1, minWidth: '300px', padding: '8px 24px', display: 'flex', alignItems: 'center', gap: '16px' }}>
+                             <input
+                                type="text"
+                                className="glass-input"
+                                style={{ padding: '6px 12px', flex: 1, margin: 0 }}
+                                value={searchTerm}
+                                onChange={(e) => setSearchTerm(e.target.value)}
+                                placeholder="Search technology, status, endpoint or secret..."
+                            />
+                        </div>
+                        <div className="glass-panel" style={{ display: 'flex', padding: '8px', gap: '12px', alignItems: 'center' }}>
+                            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 600, paddingLeft: '8px' }}>QUICK FILTERS:</span>
+                            <button 
+                                className="glass-btn" 
+                                onClick={() => setQuickFilters(prev => ({ ...prev, only200: !prev.only200 }))}
+                                style={{ 
+                                    fontSize: '0.75rem', padding: '4px 12px', 
+                                    borderColor: quickFilters.only200 ? '#00ff9d' : 'var(--panel-border)',
+                                    color: quickFilters.only200 ? '#00ff9d' : 'var(--text-muted)',
+                                    background: quickFilters.only200 ? 'rgba(0,255,157,0.05)' : 'transparent'
+                                }}
+                            >
+                                🟢 200 OK
+                            </button>
+                            <button 
+                                className="glass-btn" 
+                                onClick={() => setQuickFilters(prev => ({ ...prev, onlySecrets: !prev.onlySecrets }))}
+                                style={{ 
+                                    fontSize: '0.75rem', padding: '4px 12px', 
+                                    borderColor: quickFilters.onlySecrets ? '#ff4d4d' : 'var(--panel-border)',
+                                    color: quickFilters.onlySecrets ? '#ff4d4d' : 'var(--text-muted)',
+                                    background: quickFilters.onlySecrets ? 'rgba(255,77,77,0.05)' : 'transparent'
+                                }}
+                            >
+                                🔑 JS Secrets
+                            </button>
+                            <button 
+                                className="glass-btn" 
+                                onClick={() => setQuickFilters(prev => ({ ...prev, onlyParams: !prev.onlyParams }))}
+                                style={{ 
+                                    fontSize: '0.75rem', padding: '4px 12px', 
+                                    borderColor: quickFilters.onlyParams ? '#ffd11a' : 'var(--panel-border)',
+                                    color: quickFilters.onlyParams ? '#ffd11a' : 'var(--text-muted)',
+                                    background: quickFilters.onlyParams ? 'rgba(255,209,26,0.05)' : 'transparent'
+                                }}
+                            >
+                                🔗 Sensitive Params
+                            </button>
+                        </div>
+                    </>
                 )}
 
                 {activeTab === 'logs' && (
@@ -303,7 +400,7 @@ export default function ProjectView() {
                             })}
                         </div>
                     </div>
-                ) : (
+                ) : activeTab === 'results' ? (
                     <div className="glass-panel" style={{ flex: 1, padding: '24px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '32px' }}>
                         <h2 style={{ paddingBottom: '16px', borderBottom: '1px solid var(--panel-border)' }}>Detailed Discovery Results</h2>
                         
@@ -312,16 +409,42 @@ export default function ProjectView() {
                         ) : (
                             Object.entries(groupedFindings).map(([domain, fList]) => (
                                 <div key={domain} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'rgba(255,255,255,0.03)', padding: '12px 16px', borderRadius: '8px', border: '1px solid var(--panel-border)' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'rgba(255,255,255,0.03)', padding: '12px 16px', borderRadius: '8px', border: '1px solid var(--panel-border)', position: 'relative' }}>
                                         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                                            <h3 style={{ fontFamily: 'var(--font-mono)', color: 'var(--accent-color)', margin: 0, fontSize: '1.2rem' }}>{domain}</h3>
+                                            <div style={{ position: 'relative' }}>
+                                                <h3 
+                                                    style={{ fontFamily: 'var(--font-mono)', color: 'var(--accent-color)', margin: 0, fontSize: '1.2rem', cursor: 'help' }}
+                                                    onMouseEnter={() => setHoveredDomain(domain)}
+                                                    onMouseLeave={() => setHoveredDomain(null)}
+                                                >
+                                                    {domain}
+                                                </h3>
+                                                {hoveredDomain === domain && (
+                                                    <div style={{
+                                                        position: 'absolute', top: '100%', left: 0, zIndex: 100, 
+                                                        marginTop: '12px', width: '320px', borderRadius: '12px', 
+                                                        overflow: 'hidden', border: '2px solid var(--accent-color)',
+                                                        boxShadow: '0 10px 40px rgba(0,0,0,0.5)', background: '#000'
+                                                    }}>
+                                                        <img 
+                                                            src={`${API_URL}/api/projects/${id}/screenshots/${domain}`} 
+                                                            alt="Host Preview" 
+                                                            style={{ width: '100%', display: 'block' }}
+                                                            onError={(e) => e.target.style.display='none'}
+                                                        />
+                                                        <div style={{ padding: '8px', fontSize: '0.7rem', color: '#fff', background: 'rgba(0,255,157,0.2)', textAlign: 'center' }}>
+                                                            Visual Recon: {domain}
+                                                        </div>
+                                                    </div>
+                                                )}
+                                            </div>
                                             <button className="glass-btn" style={{ padding: '4px', borderRadius: '4px' }} title="Individual Scan" onClick={() => handleIndividualScan(domain)}>
                                                 <Play size={14} />
                                             </button>
                                         </div>
                                         <div style={{ display: 'flex', gap: '16px', fontSize: '0.85rem' }}>
                                             {fList.some(f => f.cdn_waf) && <span style={{ padding: '4px 8px', background: 'var(--panel-bg)', borderRadius: '4px', border: '1px solid var(--panel-border)' }}>CDN/WAF: {fList.find(f => f.cdn_waf)?.cdn_waf}</span>}
-                                            {fList.some(f => f.is_wordpress) && <span style={{ padding: '4px 8px', background: 'rgba(0, 115, 170, 0.2)', color: '#00d0ff', borderRadius: '4px', border: '1px solid rgba(0, 115, 170, 0.5)' }}>WordPress Detection</span>}
+                                            {fList.some(f => f.is_wordpress) && <span style={{ padding: '4px 8px', background: 'rgba(0, 115, 170, 0.2)', color: '#00d0ff', borderRadius: '4px', border: '1px solid rgba(0, 115, 170, 0.5)' }}>WordPress</span>}
                                         </div>
                                     </div>
 
@@ -353,7 +476,21 @@ export default function ProjectView() {
                                                                     {f.severity?.toUpperCase() || 'INFO'}
                                                                 </span>
                                                             </td>
-                                                            <td style={{ padding: '12px', fontWeight: 500 }}>{f.type?.toUpperCase() || 'UNKNOWN'}</td>
+                                                            <td style={{ padding: '12px', fontWeight: 500 }}>
+                                                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                                    {f.type?.toUpperCase() || 'UNKNOWN'}
+                                                                    {(f.type === 'secret' || f.type === 'js_monitoring') && (
+                                                                        <button 
+                                                                            className="glass-btn" 
+                                                                            style={{ padding: '2px', borderRadius: '4px' }} 
+                                                                            title="View Source Code"
+                                                                            onClick={() => handleViewCode(f)}
+                                                                        >
+                                                                            <Eye size={12} />
+                                                                        </button>
+                                                                    )}
+                                                                </div>
+                                                            </td>
                                                             <td style={{ padding: '12px', fontFamily: 'var(--font-mono)', wordBreak: 'break-all' }}>{f.value}</td>
                                                             <td style={{ padding: '12px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
                                                                 {f.contextObj && typeof f.contextObj === 'object' ? Object.entries(f.contextObj).map(([k, v]) => (
@@ -371,6 +508,42 @@ export default function ProjectView() {
                                 </div>
                             ))
                         )}
+                    </div>
+                ) : (
+                    <div className="glass-panel" style={{ flex: 1, padding: '32px', overflowY: 'auto' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '32px', borderBottom: '1px solid var(--panel-border)', paddingBottom: '16px' }}>
+                            <Network size={24} color="var(--accent-color)" />
+                            <h2 style={{ margin: 0 }}>Infrastructure Target Map</h2>
+                        </div>
+
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '32px' }}>
+                            {/* Simple Relationship Graph Representation */}
+                            {Object.entries(
+                                findings.reduce((acc, f) => {
+                                    const ip = f.contextObj?.ip || 'Undiscovered IP';
+                                    if (!acc[ip]) acc[ip] = { domains: new Set(), wafs: new Set() };
+                                    if (f.domain) acc[ip].domains.add(f.domain);
+                                    if (f.cdn_waf) acc[ip].wafs.add(f.cdn_waf);
+                                    return acc;
+                                }, {})
+                            ).map(([ip, data]) => (
+                                <div key={ip} className="glass-panel" style={{ padding: '20px', minWidth: '280px', flex: 1, borderLeft: '4px solid var(--accent-color)' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+                                        <Database size={18} color="var(--accent-color)" />
+                                        <strong style={{ fontSize: '1.1rem', fontFamily: 'var(--font-mono)' }}>{ip}</strong>
+                                    </div>
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                        <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Connected Assets:</span>
+                                        {[...data.domains].map(d => (
+                                            <div key={d} style={{ fontSize: '0.9rem', padding: '4px 8px', background: 'rgba(255,255,255,0.03)', borderRadius: '4px', fontFamily: 'var(--font-mono)' }}>
+                                                {d}
+                                                {[...data.wafs].length > 0 && <span style={{ marginLeft: '8px', fontSize: '0.7rem', color: '#00d0ff' }}>({[...data.wafs].join(', ')})</span>}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
                     </div>
                 )}
 
@@ -401,6 +574,41 @@ export default function ProjectView() {
                     </div>
                 </div>
             </div>
+
+            {/* Code Viewer Modal */}
+            {viewCode && (
+                <div style={{
+                    position: 'fixed', top: 0, left: 0, width: '100%', height: '100%',
+                    background: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(8px)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+                    padding: '40px'
+                }}>
+                    <div className="glass-panel" style={{ 
+                        width: '100%', maxWidth: '1200px', height: '100%', 
+                        display: 'flex', flexDirection: 'column', 
+                        border: '1px solid var(--accent-color)',
+                        boxShadow: '0 0 30px rgba(0, 255, 157, 0.1)'
+                    }}>
+                        <div style={{ padding: '16px 24px', borderBottom: '1px solid var(--panel-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                                <Terminal size={18} color="var(--accent-color)" />
+                                <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.9rem' }}>{viewCode.path}</span>
+                            </div>
+                            <button className="glass-btn" onClick={() => setViewCode(null)} style={{ padding: '4px' }}>
+                                <X size={20} />
+                            </button>
+                        </div>
+                        <div style={{ flex: 1, overflow: 'auto', padding: '24px', background: '#050505' }}>
+                            <pre style={{ margin: 0, color: '#e0e0e0', fontSize: '0.9rem', lineHeight: '1.5', whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontFamily: 'var(--font-mono)' }}>
+                                {viewCode.content}
+                            </pre>
+                        </div>
+                        <div style={{ padding: '12px 24px', background: 'rgba(255,255,255,0.02)', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                            Showing source code for finding type: <strong>{viewCode.finding.type}</strong>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             <style>{`
         @keyframes blink { 50% { opacity: 0; } }

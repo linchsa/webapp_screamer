@@ -5,12 +5,30 @@
 TARGET=$1
 HEADER=$2
 PROJECT_DIR=$3
+PROFILE=${4:-"standard"}
+
 if [ -z "$PROJECT_DIR" ]; then
     PROJECT_DIR="/app/app_data/projects/$TARGET-$(date +%s)"
 fi
 mkdir -p "$PROJECT_DIR"
 
-echo "[SYSTEM] Starting pipeline for $TARGET"
+# Configure Nuclei Tags & Depth based on Profile
+if [ "$PROFILE" == "quick" ]; then
+    NUCLEI_TAGS="takeover,exposure,panel,config"
+    NAABU_PORTS="80,443,8080,8443"
+    SKIP_KATANA=true
+elif [ "$PROFILE" == "full" ]; then
+    NUCLEI_TAGS="takeover,exposure,panel,config,vuln,cve,tech,cms"
+    NAABU_PORTS="1-10000"
+    SKIP_KATANA=false
+else
+    # Standard
+    NUCLEI_TAGS="takeover,exposure,panel,config,vuln"
+    NAABU_PORTS="top-1000"
+    SKIP_KATANA=false
+fi
+
+echo "[SYSTEM] Starting pipeline for $TARGET (Profile: $PROFILE)"
 echo "[SYSTEM] Output directory: $PROJECT_DIR"
 echo "[SYSTEM] Using Custom Header: $HEADER"
 
@@ -23,7 +41,7 @@ echo "[SUBFINDER] Found $SUB_COUNT subdomains"
 # 2. Alive & WAF Check
 echo "[HTTPX] Checking for live hosts..."
 if [ "$SUB_COUNT" -gt 0 ]; then
-    cat "$PROJECT_DIR/subdomains.txt" | httpx -silent -H "$HEADER" -tech-detect > "$PROJECT_DIR/alive.txt"
+    cat "$PROJECT_DIR/subdomains.txt" | httpx -silent -H "$HEADER" -tech-detect -ip > "$PROJECT_DIR/alive.txt"
 else
     echo "[HTTPX] No subdomains to check."
     touch "$PROJECT_DIR/alive.txt"
@@ -43,22 +61,22 @@ else
 fi
 
 # 3. Port Scanning
-echo "[NAABU] Scanning for open ports..."
+echo "[NAABU] Scanning for open ports ($NAABU_PORTS)..."
 if [ "$SUB_COUNT" -gt 0 ]; then
-    cat "$PROJECT_DIR/subdomains.txt" | naabu -silent -p - -o "$PROJECT_DIR/ports.txt"
+    cat "$PROJECT_DIR/subdomains.txt" | naabu -silent -p "$NAABU_PORTS" -o "$PROJECT_DIR/ports.txt"
 else
     echo "[NAABU] No subdomains to scan."
 fi
 echo "[NAABU] Port scan completed. Results saved."
 
-# 4. Subdomain Takeover Check (Nuclei)
-echo "[NUCLEI] Checking for subdomain takeovers..."
+# 4. Vulnerability & Takeover Check (Nuclei)
+echo "[NUCLEI] Running templates with tags: $NUCLEI_TAGS..."
 if [ "$ALIVE_COUNT" -gt 0 ]; then
-    nuclei -l "$PROJECT_DIR/alive.txt" -tags takeover -silent -nc -o "$PROJECT_DIR/takeovers.txt"
-    echo "[NUCLEI] Takeover check complete."
+    nuclei -l "$PROJECT_DIR/alive.txt" -tags "$NUCLEI_TAGS" -silent -nc -o "$PROJECT_DIR/vulnerabilities.txt"
+    echo "[NUCLEI] Scan complete."
 else
-    echo "[NUCLEI] No live hosts to check for takeovers."
-    touch "$PROJECT_DIR/takeovers.txt"
+    echo "[NUCLEI] No live hosts to scan."
+    touch "$PROJECT_DIR/vulnerabilities.txt"
 fi
 
 # 5. Passive URLs & Fuzzing Logic
@@ -72,13 +90,18 @@ URL_COUNT=$(wc -l < "$PROJECT_DIR/gau_urls.txt")
 echo "[GAU] Found $URL_COUNT historical URLs"
 
 # 6. Active Crawling with Katana
-echo "[KATANA] Starting active crawling..."
-if [ "$ALIVE_COUNT" -gt 0 ]; then
-    cat "$PROJECT_DIR/alive.txt" | katana -jc -jsl -H "$HEADER" -silent > "$PROJECT_DIR/katana_urls.txt"
-    echo "[KATANA] Active crawling finished"
-else
-    echo "[KATANA] No live hosts to crawl, skipping."
+if [ "$SKIP_KATANA" = true ]; then
+    echo "[KATANA] Skipping active crawling as per profile."
     touch "$PROJECT_DIR/katana_urls.txt"
+else
+    echo "[KATANA] Starting active crawling..."
+    if [ "$ALIVE_COUNT" -gt 0 ]; then
+        cat "$PROJECT_DIR/alive.txt" | katana -jc -jsl -H "$HEADER" -silent > "$PROJECT_DIR/katana_urls.txt"
+        echo "[KATANA] Active crawling finished"
+    else
+        echo "[KATANA] No live hosts to crawl, skipping."
+        touch "$PROJECT_DIR/katana_urls.txt"
+    fi
 fi
 
 # 7. Intelligent URL Filtering (GF Patterns)
@@ -97,6 +120,12 @@ echo "[GF] Filtering complete. Results in $PROJECT_DIR/fuzzing/"
 echo "[PLAYWRIGHT] Running deep crawler and asset downloader..."
 if [ -f "/app/backend/scripts/active_crawler.js" ]; then
     node /app/backend/scripts/active_crawler.js "$PROJECT_DIR/alive.txt" "$PROJECT_DIR" "$HEADER"
+    
+    # New: Hash Comparison Logic (Monitoring)
+    if [ -d "$PROJECT_DIR/assets" ]; then
+        echo "[MONITOR] Calculating JS hashes for change detection..."
+        find "$PROJECT_DIR/assets" -type f -name "*.js" -exec sha256sum {} + > "$PROJECT_DIR/js_hashes.txt"
+    fi
 else
     echo "[PLAYWRIGHT] Crawler script not found, skipping."
 fi

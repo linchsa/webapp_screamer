@@ -58,6 +58,14 @@ async function initDb() {
             rate_limit INTEGER DEFAULT 10,
             wpscan_key TEXT DEFAULT ''
         )`);
+        await dbRepo.query(`CREATE TABLE IF NOT EXISTS asset_hashes (
+            id SERIAL PRIMARY KEY,
+            project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+            file_path TEXT NOT NULL,
+            hash TEXT NOT NULL,
+            last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(project_id, file_path)
+        )`);
         // Ensure default settings exist
         await dbRepo.query(`INSERT INTO settings (id, theme, scan_profile, rate_limit, wpscan_key) 
                             VALUES (1, 'dark', 'normal', 10, '') 
@@ -70,6 +78,44 @@ async function initDb() {
 initDb();
 
 // Active Scans Tracking
+app.get('/api/projects/:id/screenshots/:domain', (req, res) => {
+    const { id, domain } = req.params;
+    dbRepo.query('SELECT target FROM projects WHERE id = $1', [id]).then(projRes => {
+        if (projRes.rows.length === 0) return res.status(404).json({ error: 'Project not found' });
+        const baseDir = path.join(__dirname, '..', 'app_data', 'projects');
+        const projTargetSnippet = projRes.rows[0].target.replace('*', 'all');
+        const dirs = fs.readdirSync(baseDir)
+            .filter(d => d.startsWith(projTargetSnippet))
+            .sort((a,b) => fs.statSync(path.join(baseDir, b)).mtime - fs.statSync(path.join(baseDir, a)).mtime);
+        if (dirs.length === 0) return res.status(404).json({ error: 'Project directory not found' });
+        const screenshotPath = path.join(baseDir, dirs[0], 'screenshots', `${domain}.png`);
+        if (fs.existsSync(screenshotPath)) res.sendFile(screenshotPath);
+        else res.status(404).send('Screenshot not found');
+    });
+});
+
+app.get('/api/projects/:id/assets/view', (req, res) => {
+    const { id } = req.params;
+    const { filePath } = req.query;
+    if (!filePath) return res.status(400).json({ error: 'filePath is required' });
+
+    dbRepo.query('SELECT target FROM projects WHERE id = $1', [id]).then(projRes => {
+        if (projRes.rows.length === 0) return res.status(404).json({ error: 'Project not found' });
+        const baseDir = path.join(__dirname, '..', 'app_data', 'projects');
+        const projTargetSnippet = projRes.rows[0].target.replace('*', 'all');
+        const dirs = fs.readdirSync(baseDir)
+            .filter(d => d.startsWith(projTargetSnippet))
+            .sort((a,b) => fs.statSync(path.join(baseDir, b)).mtime - fs.statSync(path.join(baseDir, a)).mtime);
+        if (dirs.length === 0) return res.status(404).json({ error: 'Project directory not found' });
+        const absolutePath = path.join(baseDir, dirs[0], 'assets', filePath);
+        if (!absolutePath.startsWith(baseDir)) return res.status(403).json({ error: 'Access denied' });
+        if (fs.existsSync(absolutePath)) {
+            const content = fs.readFileSync(absolutePath, 'utf8');
+            res.send(content);
+        } else res.status(404).send('File not found');
+    });
+});
+
 const activeScans = new Map();
 
 // Helper to generate advanced mocks
@@ -141,8 +187,13 @@ io.on('connection', (socket) => {
 
         dbRepo.query('SELECT wpscan_key, scan_profile FROM settings WHERE id = 1').then(settingsRes => {
             const settings = settingsRes.rows[0];
-            const env = { ...process.env, WPSCAN_API_TOKEN: settings?.wpscan_key || '' };
-            const scannerProcess = spawn('bash', ['./scripts/scanner.sh', target, header, projectDir], { env });
+            const profile = settings?.scan_profile || 'standard';
+            const env = { 
+                ...process.env, 
+                WPSCAN_API_TOKEN: settings?.wpscan_key || '',
+                SCAN_PROFILE: profile
+            };
+            const scannerProcess = spawn('bash', ['./scripts/scanner.sh', target, header, projectDir, profile], { env });
 
             const mockInterval = setInterval(() => {
                 const f = generateMockFinding(projectId, target);
@@ -171,11 +222,47 @@ io.on('connection', (socket) => {
                 io.emit('scan-log', { projectId, log: `[ERR] ${data.toString()}` });
             });
 
-            scannerProcess.on('close', (code) => {
+            scannerProcess.on('close', async (code) => {
                 if (activeScans.has(projectId)) {
                     clearInterval(activeScans.get(projectId).mockInterval);
                     activeScans.delete(projectId);
                 }
+
+                // Process JS Monitoring Hashes
+                const hashFile = path.join(projectDir, 'js_hashes.txt');
+                if (fs.existsSync(hashFile)) {
+                    try {
+                        const content = fs.readFileSync(hashFile, 'utf8');
+                        const lines = content.split('\n').filter(l => l.trim());
+                        
+                        for (const line of lines) {
+                            const [hash, filePath] = line.split(/\s+/);
+                            const cleanPath = filePath.replace(projectDir, ''); // Relative path
+                            
+                            // Check for previous hash
+                            const prevRes = await dbRepo.query('SELECT hash FROM asset_hashes WHERE project_id = $1 AND file_path = $2', [projectId, cleanPath]);
+                            
+                            if (prevRes.rows.length > 0) {
+                                const oldHash = prevRes.rows[0].hash;
+                                if (oldHash !== hash) {
+                                    // CHANGE DETECTED!
+                                    const fileName = path.basename(cleanPath);
+                                    await dbRepo.query('INSERT INTO findings (project_id, domain, type, value, context, severity) VALUES ($1, $2, $3, $4, $5, $6)', 
+                                        [projectId, 'Infrastructure Monitor', 'js_monitoring', fileName, `[UPDATED] Code change detected in ${cleanPath}. Hash changed from ${oldHash.substring(0,8)}... to ${hash.substring(0,8)}...`, 'medium']);
+                                    
+                                    await dbRepo.query('UPDATE asset_hashes SET hash = $1, last_seen = CURRENT_TIMESTAMP WHERE project_id = $2 AND file_path = $3', [hash, projectId, cleanPath]);
+                                    io.emit('scan-log', { projectId, log: `[MONITOR] Code change detected: ${fileName}` });
+                                }
+                            } else {
+                                // NEW ASSET established
+                                await dbRepo.query('INSERT INTO asset_hashes (project_id, file_path, hash) VALUES ($1, $2, $3)', [projectId, cleanPath, hash]);
+                            }
+                        }
+                    } catch (err) {
+                        console.error("[ERR] Processing JS hashes:", err);
+                    }
+                }
+
                 io.emit('scan-log', { projectId, log: `[SYSTEM] Scan finished with exit code ${code}` });
                 io.emit('scan-finished', { projectId });
             });

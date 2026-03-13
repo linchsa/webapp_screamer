@@ -14,9 +14,10 @@ if (customHeaderString && customHeaderString.includes(':')) {
 }
 
 const assetsDir = path.join(outDir, 'assets');
-if (!fs.existsSync(assetsDir)) {
-    fs.mkdirSync(assetsDir, { recursive: true });
-}
+const screenshotsDir = path.join(outDir, 'screenshots');
+
+if (!fs.existsSync(assetsDir)) fs.mkdirSync(assetsDir, { recursive: true });
+if (!fs.existsSync(screenshotsDir)) fs.mkdirSync(screenshotsDir, { recursive: true });
 
 async function run() {
     if (!fs.existsSync(targetFile)) {
@@ -66,6 +67,17 @@ async function run() {
             });
 
             await page.goto(url, { waitUntil: 'networkidle', timeout: 15000 });
+
+            // Capture Screenshot for Visual Recon
+            try {
+                const domainMatch = url.match(/:\/\/(.[^/]+)/);
+                const domain = domainMatch ? domainMatch[1] : url.replace(/[^a-zA-Z0-9]/g, '_');
+                const screenshotPath = path.join(screenshotsDir, `${domain}.png`);
+                await page.screenshot({ path: screenshotPath, type: 'png' });
+                console.log(`[PLAYWRIGHT] Screenshot saved for ${domain}`);
+            } catch (screenshotError) {
+                console.log(`[PLAYWRIGHT] Screenshot failed for ${url}: ${screenshotError.message}`);
+            }
 
             // Find all buttons and click them to trigger dynamic requests
             console.log(`[PLAYWRIGHT] Clicking interactive elements on ${url}`);

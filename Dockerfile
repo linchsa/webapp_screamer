@@ -13,6 +13,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
     python3-venv \
+    gcc \
+    g++ \
+    make \
     libnss3 \
     libatk1.0-0 \
     libatk-bridge2.0-0 \
@@ -43,11 +46,15 @@ RUN cd /tmp \
 # Set up Go Paths
 ENV GOPATH=/root/go
 ENV PATH=$PATH:/usr/local/go/bin:$GOPATH/bin
+# Prevent Go from auto-downloading newer toolchains
+ENV GOTOOLCHAIN=local
+ENV CGO_ENABLED=1
 
-# Install Bug Bounty Tools via Go (all require Go 1.21+)
+# Install Bug Bounty Tools via Go
+# Pin katana to v1.0.3 — v1.5+ requires Go 1.25 which is not yet released
 RUN go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
 RUN go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
-RUN go install -v github.com/projectdiscovery/katana/cmd/katana@latest
+RUN go install -v github.com/projectdiscovery/katana/cmd/katana@v1.0.3
 RUN go install -v github.com/projectdiscovery/cdncheck/cmd/cdncheck@latest
 RUN go install -v github.com/lc/gau/v2/cmd/gau@latest
 RUN go install -v github.com/tomnomnom/waybackurls@latest

@@ -2,7 +2,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
-const sqlite3 = require('sqlite3').verbose();
+const { Pool } = require('pg');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
@@ -19,53 +19,62 @@ const io = new Server(server, {
     }
 });
 
-// Setup SQLite Map
-const dbPath = path.join(__dirname, '..', 'app_data', 'database.sqlite');
-if (!fs.existsSync(path.dirname(dbPath))) {
-    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-}
-const db = new sqlite3.Database(dbPath);
-
-db.serialize(() => {
-    db.run('PRAGMA foreign_keys = ON;'); // Enable CASCADE
-    db.run(`CREATE TABLE IF NOT EXISTS projects (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT,
-    target TEXT,
-    header TEXT,
-    color TEXT,
-    options TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )`);
-    db.run(`CREATE TABLE IF NOT EXISTS findings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id INTEGER,
-    domain TEXT,
-    type TEXT,
-    value TEXT,
-    context TEXT,
-    cdn_waf TEXT,
-    is_wordpress BOOLEAN DEFAULT 0,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
-  )`);
-    db.run(`CREATE TABLE IF NOT EXISTS settings (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    theme TEXT DEFAULT 'dark',
-    scan_profile TEXT DEFAULT 'normal',
-    rate_limit INTEGER DEFAULT 10,
-    wpscan_key TEXT DEFAULT ''
-  )`);
-    // Ensure default settings exist
-    db.run(`INSERT OR IGNORE INTO settings (id, theme, scan_profile, rate_limit, wpscan_key) VALUES (1, 'dark', 'normal', 10, '')`);
+// Setup PostgreSQL Pool
+const dbRepo = new Pool({
+    user: process.env.DB_USER || 'postgres',
+    host: process.env.DB_HOST || 'localhost',
+    database: process.env.DB_NAME || 'screamer',
+    password: process.env.DB_PASSWORD || 'postgres',
+    port: process.env.DB_PORT || 5432,
 });
+
+async function initDb() {
+    try {
+        await dbRepo.query(`CREATE TABLE IF NOT EXISTS projects (
+            id SERIAL PRIMARY KEY,
+            name TEXT,
+            target TEXT,
+            header TEXT,
+            color TEXT,
+            options TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )`);
+        await dbRepo.query(`CREATE TABLE IF NOT EXISTS findings (
+            id SERIAL PRIMARY KEY,
+            project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+            domain TEXT,
+            type TEXT,
+            value TEXT,
+            context TEXT,
+            severity TEXT DEFAULT 'info',
+            cdn_waf TEXT,
+            is_wordpress BOOLEAN DEFAULT FALSE,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )`);
+        await dbRepo.query(`CREATE TABLE IF NOT EXISTS settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            theme TEXT DEFAULT 'dark',
+            scan_profile TEXT DEFAULT 'normal',
+            rate_limit INTEGER DEFAULT 10,
+            wpscan_key TEXT DEFAULT ''
+        )`);
+        // Ensure default settings exist
+        await dbRepo.query(`INSERT INTO settings (id, theme, scan_profile, rate_limit, wpscan_key) 
+                            VALUES (1, 'dark', 'normal', 10, '') 
+                            ON CONFLICT (id) DO NOTHING`);
+        console.log("[SYSTEM] PostgreSQL Database Initialized.");
+    } catch (err) {
+        console.error("[ERR] DB Init Error:", err);
+    }
+}
+initDb();
 
 // Active Scans Tracking
 const activeScans = new Map();
 
 // Helper to generate advanced mocks
 const generateMockFinding = (projectId, baseTarget) => {
-    const types = ['subdomain', 'port', 'secret', 'endpoint', 'wp_vuln'];
+    const types = ['subdomain', 'port', 'secret', 'endpoint', 'wp_vuln', 'takeover', 'interesting_url'];
     const type = types[Math.floor(Math.random() * types.length)];
     const sdPrefixes = ['api', 'dev', 'staging', 'admin', 'test'];
     const sd = `${sdPrefixes[Math.floor(Math.random() * sdPrefixes.length)]}${Math.floor(Math.random() * 100)}.${baseTarget.replace('*.', '')}`;
@@ -75,76 +84,71 @@ const generateMockFinding = (projectId, baseTarget) => {
 
     let value = '';
     let context = {};
+    let severity = 'info';
 
     switch (type) {
         case 'port':
             value = `${Math.floor(Math.random() * 8000) + 80}`;
             context = { protocol: value == 443 ? 'https' : 'http', service: value == 22 ? 'ssh' : 'web' };
+            severity = 'low';
             break;
         case 'subdomain':
             value = sd;
             context = { ip: `104.21.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}` };
+            severity = 'info';
             break;
         case 'secret':
             value = `AKIA${Math.random().toString(36).substring(2, 12).toUpperCase()}`;
             context = { key_type: 'AWS Access Key', file: 'config/aws.yml', line: 42 };
+            severity = 'critical';
             break;
         case 'endpoint':
             value = `/api/v1/users/${Math.floor(Math.random() * 9999)}`;
             context = { method: 'GET', status: 200, auth_required: false };
+            severity = 'medium';
             break;
         case 'wp_vuln':
             value = `CVE-2023-${Math.floor(Math.random() * 9999)}`;
             context = { plugin: 'elementor', cvss: 8.5, description: 'Unauthenticated RCE via arbitrary file upload.' };
+            severity = 'high';
+            break;
+        case 'takeover':
+            value = sd;
+            context = { service: 'AWS S3', status: 'vulnerable', proof: 'NoSuchBucket' };
+            severity = 'critical';
+            break;
+        case 'interesting_url':
+            value = `https://${sd}/redirect?url=http://evil.com`;
+            context = { param: 'url', pattern: 'redirect' };
+            severity = 'medium';
             break;
     }
 
-    return { type, value, domain: sd, context: JSON.stringify(context), cdn_waf: cdn, is_wordpress: isWp };
+    return { type, value, domain: sd, context: JSON.stringify(context), severity, cdn_waf: cdn, is_wordpress: isWp };
 };
 
-// Socket.io for live streaming
+// ... socket events ...
 io.on('connection', (socket) => {
-    console.log('Client connected:', socket.id);
-
     socket.on('start-scan', (data) => {
         const { projectId, target, header, projectName } = data;
-        
         if (activeScans.has(projectId)) {
             socket.emit('scan-log', { projectId, log: '[SYSTEM] Scan is already running for this project.' });
             return;
         }
-        
-        console.log(`Starting scan for project ${projectId} on ${target} with header: ${header}`);
 
-        io.emit('scan-log', { projectId, log: `[SYSTEM] Initializing scan pipeline for ${target}...` });
+        const projectDir = path.join(__dirname, '..', 'app_data', 'projects', `${target.replace('*', 'all')}-${Date.now()}`);
+        if (!fs.existsSync(projectDir)) fs.mkdirSync(projectDir, { recursive: true });
 
-        // Retrieve settings before starting the scan
-        db.get('SELECT wpscan_key, scan_profile FROM settings WHERE id = 1', [], (err, settings) => {
-            if (err || !settings) {
-                io.emit('scan-log', { projectId, log: `[SYSTEM] Could not load Global Settings. Using defaults.` });
-            } else {
-                if (settings.wpscan_key) {
-                    io.emit('scan-log', { projectId, log: `[SYSTEM] WPScan API Key found. WordPress automated analysis enabled.` });
-                }
-                io.emit('scan-log', { projectId, log: `[SYSTEM] Scan Profile: ${settings.scan_profile.toUpperCase()}` });
-            }
-
-            // In actual deployment, the tools run inside Docker. Here we spawn a shell script.
-            // We pass the API key via environment variable
+        dbRepo.query('SELECT wpscan_key, scan_profile FROM settings WHERE id = 1').then(settingsRes => {
+            const settings = settingsRes.rows[0];
             const env = { ...process.env, WPSCAN_API_TOKEN: settings?.wpscan_key || '' };
-            const scannerProcess = spawn('bash', ['./scripts/scanner.sh', target, header], { env });
+            const scannerProcess = spawn('bash', ['./scripts/scanner.sh', target, header, projectDir], { env });
 
-            // Mock finding generation for demo purposes
             const mockInterval = setInterval(() => {
                 const f = generateMockFinding(projectId, target);
-                
-                db.run('INSERT INTO findings (project_id, domain, type, value, context, cdn_waf, is_wordpress) VALUES (?, ?, ?, ?, ?, ?, ?)', 
-                [projectId, f.domain, f.type, f.value, f.context, f.cdn_waf, f.is_wordpress], function(err) {
-                    if (!err) {
-                        io.emit('scan-log', { projectId, log: `[SYSTEM] Found ${f.type}: ${f.value} on ${f.domain}` });
-                    } else {
-                        io.emit('scan-log', { projectId, log: `[ERR] DB Insert: ${err.message}` });
-                    }
+                dbRepo.query('INSERT INTO findings (project_id, domain, type, value, context, severity, cdn_waf, is_wordpress) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)', 
+                [projectId, f.domain, f.type, f.value, f.context, f.severity, f.cdn_waf, f.is_wordpress]).then(() => {
+                    io.emit('scan-log', { projectId, log: `[SYSTEM] Found ${f.type} [${f.severity.toUpperCase()}]: ${f.value} on ${f.domain}` });
                 });
             }, 3000);
 
@@ -153,6 +157,7 @@ io.on('connection', (socket) => {
                 projectName: projectName || `Project #${projectId}`,
                 target,
                 startTime: Date.now(),
+                projectDir,
                 findingsSummary: { subdomains: 0, ports: 0, vulnerabilities: 0 },
                 scannerProcess,
                 mockInterval
@@ -195,54 +200,68 @@ io.on('connection', (socket) => {
 });
 
 // Basic API endpoints
-app.get('/api/projects', (req, res) => {
-    db.all('SELECT * FROM projects', [], (err, rows) => {
-        if (err) return res.status(500).json({ error: err.message });
+app.get('/api/projects', async (req, res) => {
+    try {
+        const result = await dbRepo.query('SELECT * FROM projects');
+        const rows = result.rows;
         
-        // Count findings for each project to send initial 0 states
-        const promises = rows.map(row => {
-            return new Promise((resolve, reject) => {
-                db.get('SELECT COUNT(*) as count FROM findings WHERE project_id = ?', [row.id], (err, result) => {
-                    if (err) resolve({ ...row, findingsCount: 0 });
-                    else resolve({ ...row, findingsCount: result.count, options: row.options ? JSON.parse(row.options) : {} });
-                });
-            });
+        const promises = rows.map(async row => {
+            const countResult = await dbRepo.query('SELECT COUNT(*) as count FROM findings WHERE project_id = $1', [row.id]);
+            return { 
+                ...row, 
+                findingsCount: parseInt(countResult.rows[0].count), 
+                options: row.options ? JSON.parse(row.options) : {} 
+            };
         });
         
-        Promise.all(promises).then(results => res.json(results));
-    });
+        const results = await Promise.all(promises);
+        res.json(results);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-app.get('/api/projects/:id', (req, res) => {
-    db.get('SELECT * FROM projects WHERE id = ?', [req.params.id], (err, row) => {
-        if (err) return res.status(500).json({ error: err.message });
-        if (!row) return res.status(404).json({ error: "Project not found" });
+app.get('/api/projects/:id', async (req, res) => {
+    try {
+        const result = await dbRepo.query('SELECT * FROM projects WHERE id = $1', [req.params.id]);
+        if (result.rows.length === 0) return res.status(404).json({ error: "Project not found" });
+        const row = result.rows[0];
         row.options = row.options ? JSON.parse(row.options) : {};
         res.json(row);
-    });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-app.delete('/api/projects/:id', (req, res) => {
-    db.run('DELETE FROM projects WHERE id = ?', [req.params.id], function(err) {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ success: true, changes: this.changes });
-    });
+app.delete('/api/projects/:id', async (req, res) => {
+    try {
+        const result = await dbRepo.query('DELETE FROM projects WHERE id = $1', [req.params.id]);
+        res.json({ success: true, changes: result.rowCount });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-app.get('/api/projects/:id/findings', (req, res) => {
-    db.all('SELECT * FROM findings WHERE project_id = ? ORDER BY timestamp DESC', [req.params.id], (err, rows) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(rows);
-    });
+app.get('/api/projects/:id/findings', async (req, res) => {
+    try {
+        const result = await dbRepo.query('SELECT * FROM findings WHERE project_id = $1 ORDER BY timestamp DESC', [req.params.id]);
+        res.json(result.rows);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-app.post('/api/projects', (req, res) => {
+app.post('/api/projects', async (req, res) => {
     const { name, target, header, color, options } = req.body;
-    db.run('INSERT INTO projects (name, target, header, color, options) VALUES (?, ?, ?, ?, ?)', 
-    [name, target, header, color, JSON.stringify(options || {})], function (err) {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ id: this.lastID, name, target, header, color, options });
-    });
+    try {
+        const result = await dbRepo.query(
+            'INSERT INTO projects (name, target, header, color, options) VALUES ($1, $2, $3, $4, $5) RETURNING id', 
+            [name, target, header, color, JSON.stringify(options || {})]
+        );
+        res.json({ id: result.rows[0].id, name, target, header, color, options });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 app.get('/api/scans/active', (req, res) => {
@@ -256,21 +275,56 @@ app.get('/api/scans/active', (req, res) => {
     res.json(scansList);
 });
 
-// Settings API
-app.get('/api/settings', (req, res) => {
-    db.get('SELECT * FROM settings WHERE id = 1', [], (err, row) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(row);
-    });
+app.post('/api/scans/individual', async (req, res) => {
+    const { projectId, domain, header } = req.body;
+    console.log(`[SYSTEM] Starting INDIVIDUAL scan for ${domain} in project ${projectId}`);
+    
+    io.emit('scan-log', { projectId, log: `[SYSTEM] Individual deep recon started for: ${domain}` });
+    
+    setTimeout(async () => {
+        const mockFinding = {
+            project_id: projectId,
+            domain: domain,
+            type: 'port',
+            value: '8080',
+            context: JSON.stringify({ service: 'http-alt', banner: 'Jetty/9.4.z' }),
+            severity: 'low'
+        };
+        try {
+            await dbRepo.query(
+                'INSERT INTO findings (project_id, domain, type, value, context, severity) VALUES ($1, $2, $3, $4, $5, $6)',
+                [mockFinding.project_id, mockFinding.domain, mockFinding.type, mockFinding.value, mockFinding.context, mockFinding.severity]
+            );
+            io.emit('scan-log', { projectId, log: `[SYSTEM] Individual Scan on ${domain} found open port 8080.` });
+        } catch (err) {
+            console.error(err);
+        }
+    }, 5000);
+
+    res.json({ success: true, message: `Individual scan queued for ${domain}` });
 });
 
-app.post('/api/settings', (req, res) => {
+// Settings API
+app.get('/api/settings', async (req, res) => {
+    try {
+        const result = await dbRepo.query('SELECT * FROM settings WHERE id = 1');
+        res.json(result.rows[0]);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/settings', async (req, res) => {
     const { theme, scan_profile, rate_limit, wpscan_key } = req.body;
-    db.run('UPDATE settings SET theme = ?, scan_profile = ?, rate_limit = ?, wpscan_key = ? WHERE id = 1', 
-    [theme, scan_profile, rate_limit, wpscan_key], function(err) {
-        if (err) return res.status(500).json({ error: err.message });
+    try {
+        await dbRepo.query(
+            'UPDATE settings SET theme = $1, scan_profile = $2, rate_limit = $3, wpscan_key = $4 WHERE id = 1', 
+            [theme, scan_profile, rate_limit, wpscan_key]
+        );
         res.json({ success: true });
-    });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 const PORT = process.env.PORT || 3000;

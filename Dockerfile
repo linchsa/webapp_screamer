@@ -36,6 +36,9 @@ RUN apt-get update --fix-missing && apt-get install -y --no-install-recommends \
     libasound2t64 \
     gnupg \
     libpcap-dev \
+    postgresql \
+    postgresql-contrib \
+    libpq-dev \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Instalación de Node.js 20
@@ -63,6 +66,17 @@ RUN go install -v github.com/projectdiscovery/katana/cmd/katana@v1.0.3
 RUN go install -v github.com/projectdiscovery/cdncheck/cmd/cdncheck@v1.1.0
 RUN go install -v github.com/lc/gau/v2/cmd/gau@v2.2.3
 RUN go install -v github.com/tomnomnom/waybackurls@latest
+RUN go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@v3.3.0
+RUN go install -v github.com/tomnomnom/gf@latest
+
+# Configuración de patrones para GF (Interesting Params)
+RUN git clone https://github.com/tomnomnom/gf /tmp/gf-src && \
+    mkdir -p /root/.gf && \
+    cp /tmp/gf-src/examples/*.json /root/.gf/ && \
+    rm -rf /tmp/gf-src
+RUN git clone https://github.com/1ndianl33t/Gf-Patterns /tmp/gf-patterns && \
+    cp /tmp/gf-patterns/*.json /root/.gf/ && \
+    rm -rf /tmp/gf-patterns
 
 # Instalación de Naabu v2.3.1 (via binario)
 RUN cd /tmp && \
@@ -95,6 +109,12 @@ WORKDIR /app
 # Exponer puertos (Backend API / WebSockets)
 EXPOSE 3000
 
-# Script de arranque
-# Limpia node_modules y reinstala para asegurar compatibilidad con la arquitectura del contenedor
-CMD ["sh", "-c", "cd /app/backend && rm -rf node_modules package-lock.json && npm install && npm rebuild sqlite3 && node server.js"]
+# Script de arranque robusto (Inicia Postgres, Crea DB y ejecuta Backend)
+CMD ["sh", "-c", "service postgresql start && \
+    sleep 3 && \
+    su - postgres -c \"psql -c 'CREATE DATABASE screamer;'\" || true && \
+    su - postgres -c \"psql -c \\\"ALTER USER postgres WITH PASSWORD 'postgres';\\\"\" && \
+    cd /app/backend && \
+    rm -rf node_modules package-lock.json && \
+    npm install && \
+    node server.js"]

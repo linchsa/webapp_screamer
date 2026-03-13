@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Play, Square, Terminal, Network, ShieldAlert, Cpu, Download, Trash2, List, TableProperties, Eye, X, Database, Flame } from 'lucide-react';
+import { ArrowLeft, Play, Square, Terminal, Network, ShieldAlert, Cpu, Download, Trash2, List, TableProperties, Eye, X, Database, Flame, Camera } from 'lucide-react';
 import io from 'socket.io-client';
 
 const API_URL = 'http://localhost:3000';
@@ -14,7 +14,7 @@ export default function ProjectView() {
     const [scanActive, setScanActive] = useState(false);
     const [logs, setLogs] = useState(['Connecting to backend...']);
     const [findings, setFindings] = useState([]);
-    const [activeTab, setActiveTab] = useState('logs'); // 'logs' or 'results'
+    const [activeTab, setActiveTab] = useState('logs'); // 'logs', 'results', 'api' or 'map'
     
     // Stats for insights
     const [stats, setStats] = useState({ subdomains: 0, ports: 0, vulns: 0 });
@@ -27,6 +27,7 @@ export default function ProjectView() {
 
     const [viewCode, setViewCode] = useState(null); // { path, content, finding }
     const [hoveredDomain, setHoveredDomain] = useState(null);
+    const [selectedScreenshot, setSelectedScreenshot] = useState(null);
 
     const terminalRef = useRef(null);
     const socketRef = useRef(null);
@@ -214,6 +215,11 @@ export default function ProjectView() {
         socket.emit('start-ip-scan', { projectId: parseInt(id), ip, header: customHeader });
     };
 
+    const handleDnsRetry = (domain) => {
+        if (!socket) return;
+        socket.emit('dns-retry', { projectId: parseInt(id), domain });
+    };
+
 
     // Group findings by domain with filter
     const filteredFindings = findings.filter(f => {
@@ -299,6 +305,13 @@ export default function ProjectView() {
                         style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 16px', background: activeTab === 'results' ? 'var(--accent-color)' : 'transparent', color: activeTab === 'results' ? '#000' : 'var(--text-main)' }}
                     >
                         <TableProperties size={18} /> Discovery Results
+                    </button>
+                    <button 
+                        className={`glass-btn ${activeTab === 'api' ? 'primary' : ''}`} 
+                        onClick={() => setActiveTab('api')}
+                        style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 16px', background: activeTab === 'api' ? 'var(--accent-color)' : 'transparent', color: activeTab === 'api' ? '#000' : 'var(--text-main)' }}
+                    >
+                        <Cpu size={18} /> API Inventory
                     </button>
                     <button 
                         className={`glass-btn ${activeTab === 'map' ? 'primary' : ''}`} 
@@ -435,6 +448,9 @@ export default function ProjectView() {
                                                             SMART TARGET
                                                         </span>
                                                     )}
+                                                    <button className="glass-btn" style={{ padding: '4px', borderRadius: '4px', marginLeft: '4px' }} title="Visual Recon" onClick={() => setSelectedScreenshot(domain)}>
+                                                        <Camera size={14} />
+                                                    </button>
                                                 </div>
                                                 {hoveredDomain === domain && (
                                                     <div style={{
@@ -526,6 +542,43 @@ export default function ProjectView() {
                             ))
                         )}
                     </div>
+                ) : activeTab === 'api' ? (
+                    <div className="glass-panel" style={{ flex: 1, padding: '24px', overflowY: 'auto' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '32px', borderBottom: '1px solid var(--panel-border)', paddingBottom: '16px' }}>
+                            <Cpu size={24} color="var(--accent-color)" />
+                            <h2 style={{ margin: 0 }}>API Inventory & Endpoint Collector</h2>
+                        </div>
+                        
+                        <div style={{ overflowX: 'auto' }}>
+                            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
+                                <thead>
+                                    <tr style={{ textAlign: 'left', borderBottom: '1px solid var(--panel-border)', color: 'var(--text-muted)' }}>
+                                        <th style={{ padding: '12px' }}>Endpoint</th>
+                                        <th style={{ padding: '12px' }}>Method</th>
+                                        <th style={{ padding: '12px' }}>Host</th>
+                                        <th style={{ padding: '12px' }}>Context</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {findings.filter(f => f.type === 'endpoint' || f.type === 'interesting_url').map((f, i) => {
+                                        const hasParams = f.value.includes('?') || f.value.includes('=');
+                                        const c = f.contextObj || {};
+                                        return (
+                                            <tr key={i} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', background: hasParams ? 'rgba(0, 255, 157, 0.05)' : 'transparent' }}>
+                                                <td style={{ padding: '12px', fontFamily: 'var(--font-mono)', fontWeight: hasParams ? 'bold' : 'normal' }}>
+                                                    {f.value}
+                                                    {hasParams && <span style={{ marginLeft: '8px', fontSize: '0.6rem', padding: '2px 4px', background: 'var(--accent-color)', color: '#000', borderRadius: '4px' }}>PARAM DETECTED</span>}
+                                                </td>
+                                                <td style={{ padding: '12px' }}><span style={{ color: 'var(--accent-color)' }}>{c.method || (f.type === 'interesting_url' ? 'GET' : 'API')}</span></td>
+                                                <td style={{ padding: '12px' }}>{f.domain}</td>
+                                                <td style={{ padding: '12px', color: 'var(--text-muted)', fontSize: '0.8rem' }}>{f.context}</td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
                 ) : (
                     <div className="glass-panel" style={{ flex: 1, padding: '32px', overflowY: 'auto' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '32px', borderBottom: '1px solid var(--panel-border)', paddingBottom: '16px' }}>
@@ -564,9 +617,20 @@ export default function ProjectView() {
                                         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                                             <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Connected Assets:</span>
                                             {[...data.domains].map(d => (
-                                                <div key={d} style={{ fontSize: '0.9rem', padding: '4px 8px', background: 'rgba(255,255,255,0.03)', borderRadius: '4px', fontFamily: 'var(--font-mono)' }}>
-                                                    {d}
-                                                    {[...data.wafs].length > 0 && <span style={{ marginLeft: '8px', fontSize: '0.7rem', color: '#00d0ff' }}>({[...data.wafs].join(', ')})</span>}
+                                                <div key={d} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.9rem', padding: '4px 8px', background: 'rgba(255,255,255,0.03)', borderRadius: '4px', fontFamily: 'var(--font-mono)' }}>
+                                                    <div>
+                                                        {d}
+                                                        {[...data.wafs].length > 0 && <span style={{ marginLeft: '8px', fontSize: '0.7rem', color: '#00d0ff' }}>({[...data.wafs].join(', ')})</span>}
+                                                    </div>
+                                                    {ip === 'Undiscovered IP' && (
+                                                        <button 
+                                                            className="glass-btn" 
+                                                            style={{ padding: '2px 6px', fontSize: '0.65rem', marginLeft: '8px' }}
+                                                            onClick={() => handleDnsRetry(d)}
+                                                        >
+                                                            RETRY DNS
+                                                        </button>
+                                                    )}
                                                 </div>
                                             ))}
                                         </div>
@@ -643,6 +707,26 @@ export default function ProjectView() {
                         </div>
                         <div style={{ padding: '12px 24px', background: 'rgba(255,255,255,0.02)', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
                             Showing source code for finding type: <strong>{viewCode.finding.type}</strong>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Screenshot Modal */}
+            {selectedScreenshot && (
+                <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px' }} onClick={() => setSelectedScreenshot(null)}>
+                    <div style={{ position: 'relative', maxWidth: '90%', maxHeight: '90%', background: '#000', borderRadius: '12px', overflow: 'hidden', border: '2px solid var(--accent-color)', boxShadow: '0 0 50px rgba(0,255,157,0.2)' }} onClick={e => e.stopPropagation()}>
+                        <button style={{ position: 'absolute', top: '15px', right: '15px', background: 'rgba(0,0,0,0.5)', border: 'none', color: '#fff', cursor: 'pointer', borderRadius: '50%', padding: '8px' }} onClick={() => setSelectedScreenshot(null)}>
+                            <X size={24} />
+                        </button>
+                        <img 
+                            src={`${API_URL}/api/projects/${id}/screenshots/${selectedScreenshot}`} 
+                            alt="Visual Recon FullSize" 
+                            style={{ width: '100%', display: 'block' }}
+                        />
+                        <div style={{ padding: '16px', background: 'var(--panel-bg)', borderTop: '1px solid var(--panel-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div style={{ fontFamily: 'var(--font-mono)', color: 'var(--accent-color)', fontWeight: 'bold' }}>Visual Recon: {selectedScreenshot}</div>
+                            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Captured via Playwright Engine</div>
                         </div>
                     </div>
                 </div>

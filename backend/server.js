@@ -209,6 +209,40 @@ const generateMockFinding = (projectId, baseTarget) => {
 
 // ... socket events ...
 io.on('connection', (socket) => {
+    socket.on('dns-retry', async (data) => {
+        const { projectId, domain } = data;
+        io.emit('scan-log', { projectId, log: `[DNS] Retrying resolution for ${domain}...` });
+        
+        const { exec } = require('child_process');
+        exec(`dig +short ${domain}`, async (err, stdout) => {
+            const ip = stdout.trim().split('\n')[0];
+            if (ip && /^[0-9.]+$/.test(ip)) {
+                await dbRepo.query('UPDATE findings SET context = jsonb_set(context::jsonb, \'{ip}\', $1::jsonb) WHERE project_id = $2 AND domain = $3', [JSON.stringify(ip), projectId, domain]);
+                io.emit('scan-log', { projectId, log: `[DNS] Successfully resolved ${domain} to ${ip}` });
+                io.emit('scan-log', { projectId, log: `[SYSTEM] Refreshing Target Map...` });
+            } else {
+                io.emit('scan-log', { projectId, log: `[DNS] Could not resolve ${domain}. Check if domain is alive.` });
+            }
+        });
+    });
+
+    const handleCredentialReuse = async (projectId, finding) => {
+        if (finding.type !== 'secret') return;
+        
+        const existing = await dbRepo.query(
+            'SELECT domain FROM findings WHERE project_id = $1 AND value = $2 AND domain != $3 LIMIT 5',
+            [projectId, finding.value, finding.domain]
+        );
+
+        if (existing.rows.length > 0) {
+            const domains = existing.rows.map(r => r.domain).join(', ');
+            await dbRepo.query(
+                'INSERT INTO findings (project_id, domain, type, value, context, severity) VALUES ($1, $2, $3, $4, $5, $6)',
+                [projectId, 'Identity Monitor', 'security_alert', finding.value, `CREDENTIAL REUSE: This secret also exists on: ${domains}`, 'critical']
+            );
+            io.emit('scan-log', { projectId, log: `[SECURITY] CRITICAL: Credential reuse detected for secret on ${finding.domain}` });
+        }
+    };
     socket.on('start-scan', (data) => {
         const { projectId, target, header, projectName } = data;
         if (activeScans.has(projectId)) {
@@ -234,6 +268,7 @@ io.on('connection', (socket) => {
                 dbRepo.query('INSERT INTO findings (project_id, domain, type, value, context, severity, cdn_waf, is_wordpress) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)', 
                 [projectId, f.domain, f.type, f.value, f.context, f.severity, f.cdn_waf, f.is_wordpress]).then(() => {
                     io.emit('scan-log', { projectId, log: `[SYSTEM] Found ${f.type} [${f.severity.toUpperCase()}]: ${f.value} on ${f.domain}` });
+                    if (f.type === 'secret') handleCredentialReuse(projectId, f);
                 });
             }, 3000);
 

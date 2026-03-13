@@ -4,7 +4,7 @@ FROM kalilinux/kali-rolling
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Update and install base dependencies
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     wget \
     git \
@@ -25,7 +25,7 @@ RUN apt-get update && apt-get install -y \
     libxfixes3 \
     libxrandr2 \
     libgbm1 \
-    libasound2t64 \
+    libasound2 \
     gnupg \
     libpcap-dev \
     && rm -rf /var/lib/apt/lists/*

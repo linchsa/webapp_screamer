@@ -70,26 +70,90 @@ export default function ProjectView() {
     };
 
     const fetchProjectData = async () => {
-    // ... (rest of the fetching logic stays same, I'll focus on the UI below)
+        try {
+            const res = await fetch(`${API_URL}/api/projects/${id}`);
+            const data = await res.json();
+            setProject(data);
+            setCustomHeader(data.header || '');
+
+            const findRes = await fetch(`${API_URL}/api/projects/${id}/findings`);
+            const findData = await findRes.json();
+            
+            // Process findings to ensure context is object
+            const processed = findData.map(f => {
+                let ctx = f.context;
+                try {
+                    if (typeof ctx === 'string') ctx = JSON.parse(ctx);
+                } catch (e) {}
+                return { ...f, contextObj: ctx };
+            });
+            
+            setFindings(processed);
+
+            // Update stats
+            const subdomains = new Set(processed.map(f => f.domain)).size;
+            const ports = processed.filter(f => f.type === 'port').length;
+            const vulns = processed.filter(f => f.severity === 'critical' || f.severity === 'high').length;
+            setStats({ subdomains, ports, vulns });
+        } catch (err) {
+            console.error("[ERR] Fetching project data:", err);
+        }
     };
 
-    // ... (rest of the handlers)
+    const fetchActiveStatus = async () => {
+        try {
+            const res = await fetch(`${API_URL}/api/scans/active`);
+            const data = await res.json();
+            const isActive = data.some(s => s.projectId === parseInt(id));
+            setScanActive(isActive);
+        } catch (err) {
+            console.error(err);
+        }
+    };
 
-    // Group findings by domain with filter
-    const filteredFindings = findings.filter(f => 
-        searchTerm === '' || 
-        f.type.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        f.value.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        (f.context && f.context.toLowerCase().includes(searchTerm.toLowerCase())) ||
-        (f.domain && f.domain.toLowerCase().includes(searchTerm.toLowerCase()))
-    );
+    const handleStartScan = async () => {
+        if (!project) return;
+        setLogs(prev => [...prev, `[SYSTEM] Preparing scan for ${project.target}...`]);
+        socketRef.current.emit('start-scan', {
+            projectId: parseInt(id),
+            target: project.target,
+            header: customHeader,
+            projectName: project.name
+        });
+        setScanActive(true);
+        setActiveTab('logs');
+    };
 
-    const groupedFindings = filteredFindings.reduce((acc, finding) => {
-        const d = finding.domain || project?.target || 'Unknown Target';
-        if (!acc[d]) acc[d] = [];
-        acc[d].push(finding);
-        return acc;
-    }, {});
+    const handleStopScan = async () => {
+        socketRef.current.emit('stop-scan', { projectId: parseInt(id) });
+        setScanActive(false);
+        setLogs(prev => [...prev, '[SYSTEM] Stop signal sent.']);
+    };
+
+    const handleDeleteProject = async () => {
+        if (window.confirm('Are you sure you want to delete this project?')) {
+            await fetch(`${API_URL}/api/projects/${id}`, { method: 'DELETE' });
+            navigate('/');
+        }
+    };
+
+    const exportToCsv = () => {
+        const headers = ['Domain', 'Type', 'Value', 'Severity', 'Context'];
+        const rows = findings.map(f => [
+            f.domain,
+            f.type,
+            f.value,
+            f.severity,
+            f.context
+        ].join(','));
+        const csvContent = [headers.join(','), ...rows].join('\n');
+        const blob = new Blob([csvContent], { type: 'text/csv' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `screamer_${project?.name}_findings.csv`;
+        a.click();
+    };
 
     const handleIndividualScan = async (domain) => {
         try {
@@ -107,6 +171,22 @@ export default function ProjectView() {
             console.error(err);
         }
     };
+
+    // Group findings by domain with filter
+    const filteredFindings = findings.filter(f => 
+        searchTerm === '' || 
+        f.type.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        f.value.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (f.context && f.context.toLowerCase().includes(searchTerm.toLowerCase())) ||
+        (f.domain && f.domain.toLowerCase().includes(searchTerm.toLowerCase()))
+    );
+
+    const groupedFindings = filteredFindings.reduce((acc, finding) => {
+        const d = finding.domain || project?.target || 'Unknown Target';
+        if (!acc[d]) acc[d] = [];
+        acc[d].push(finding);
+        return acc;
+    }, {});
 
     if (!project) return <div style={{ padding: '24px' }}>Loading project details...</div>;
 
@@ -273,14 +353,14 @@ export default function ProjectView() {
                                                                     {f.severity?.toUpperCase() || 'INFO'}
                                                                 </span>
                                                             </td>
-                                                            <td style={{ padding: '12px', fontWeight: 500 }}>{f.type.toUpperCase()}</td>
+                                                            <td style={{ padding: '12px', fontWeight: 500 }}>{f.type?.toUpperCase() || 'UNKNOWN'}</td>
                                                             <td style={{ padding: '12px', fontFamily: 'var(--font-mono)', wordBreak: 'break-all' }}>{f.value}</td>
                                                             <td style={{ padding: '12px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-                                                                {f.contextObj ? Object.entries(f.contextObj).map(([k, v]) => (
+                                                                {f.contextObj && typeof f.contextObj === 'object' ? Object.entries(f.contextObj).map(([k, v]) => (
                                                                     <span key={k} style={{ display: 'inline-block', marginRight: '16px' }}>
-                                                                        <strong style={{ color: 'var(--text-main)', marginRight: '4px' }}>{k}:</strong> {v}
+                                                                        <strong style={{ color: 'var(--text-main)', marginRight: '4px' }}>{k}:</strong> {typeof v === 'object' ? JSON.stringify(v) : v}
                                                                     </span>
-                                                                )) : f.context}
+                                                                )) : (f.context || '')}
                                                             </td>
                                                         </tr>
                                                     );

@@ -7,10 +7,12 @@ HEADER=$2
 PROJECT_DIR=$3
 PROFILE=${4:-"standard"}
 
-if [ -z "$PROJECT_DIR" ]; then
-    PROJECT_DIR="/app/app_data/projects/$TARGET-$(date +%s)"
+# Detect if TARGET is an IP address
+if [[ $TARGET =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    IS_IP=true
+else
+    IS_IP=false
 fi
-mkdir -p "$PROJECT_DIR"
 
 # Configure Nuclei Tags & Depth based on Profile
 if [ "$PROFILE" == "quick" ]; then
@@ -50,7 +52,10 @@ fi
 # 2. Alive & WAF Check
 echo "[HTTPX] Checking for live hosts..."
 if [ "$SUB_COUNT" -gt 0 ]; then
-    cat "$PROJECT_DIR/subdomains.txt" | httpx -silent -H "$HEADER" -tech-detect -ip > "$PROJECT_DIR/alive.txt"
+    # Full discovery with titles and redirects
+    cat "$PROJECT_DIR/subdomains.txt" | httpx -silent -H "$HEADER" -tech-detect -ip -title -follow-redirects -json -o "$PROJECT_DIR/httpx_results.json"
+    # Extract clean final URLs for Nuclei/Katana
+    cat "$PROJECT_DIR/httpx_results.json" | jq -r '.url' > "$PROJECT_DIR/alive.txt"
 else
     echo "[HTTPX] No subdomains to check."
     touch "$PROJECT_DIR/alive.txt"
@@ -70,13 +75,20 @@ else
 fi
 
 # 3. Port Scanning
-echo "[NAABU] Scanning for open ports ($NAABU_PORTS)..."
-if [ "$SUB_COUNT" -gt 0 ]; then
-    cat "$PROJECT_DIR/subdomains.txt" | naabu -silent -p "$NAABU_PORTS" -o "$PROJECT_DIR/ports.txt"
+if [ "$IS_IP" = true ]; then
+    echo "[NMAP] Deep service scanning for IP: $TARGET..."
+    nmap -sV -T4 --top-ports 1000 -Pn "$TARGET" -oN "$PROJECT_DIR/nmap_results.txt"
+    # Convert Nmap to a format we can easily parse if needed or just use as log
+    echo "[NMAP] Port scan complete."
 else
-    echo "[NAABU] No subdomains to scan."
+    echo "[NAABU] Scanning for open ports ($NAABU_PORTS)..."
+    if [ "$SUB_COUNT" -gt 0 ]; then
+        cat "$PROJECT_DIR/subdomains.txt" | naabu -silent -p "$NAABU_PORTS" -o "$PROJECT_DIR/ports.txt"
+    else
+        echo "[NAABU] No subdomains to scan."
+    fi
+    echo "[NAABU] Port scan completed. Results saved."
 fi
-echo "[NAABU] Port scan completed. Results saved."
 
 # 4. Vulnerability & Takeover Check (Nuclei)
 echo "[NUCLEI] Running templates with tags: $NUCLEI_TAGS..."

@@ -28,6 +28,9 @@ export default function ProjectView() {
     const [viewCode, setViewCode] = useState(null); // { path, content, finding }
     const [hoveredDomain, setHoveredDomain] = useState(null);
     const [selectedScreenshot, setSelectedScreenshot] = useState(null);
+    const [insights, setInsights] = useState({ clusters: [], apiInventory: [], anomalies: [] });
+    const [smartGrouping, setSmartGrouping] = useState(true);
+    const [hideRedirects, setHideRedirects] = useState(true);
 
     const terminalRef = useRef(null);
     const socketRef = useRef(null);
@@ -99,6 +102,13 @@ export default function ProjectView() {
             });
             
             setFindings(processed);
+
+            // Fetch Insights
+            const insightRes = await fetch(`${API_URL}/api/projects/${id}/insights`);
+            if (insightRes.ok) {
+                const insightData = await insightRes.json();
+                setInsights(insightData);
+            }
 
             // Update stats
             const subdomains = new Set(processed.map(f => f.domain)).size;
@@ -217,7 +227,33 @@ export default function ProjectView() {
 
 
     // Group findings by domain with filter
-    const filteredFindings = findings.filter(f => {
+    const findingsToDisplay = smartGrouping && activeTab === 'results' ? (() => {
+        // Apply cluster filters
+        const groupedMap = new Map();
+        const clusterKeys = insights.clusters.map(c => c.pattern);
+        
+        const ungrouped = findings.filter(f => {
+            if (!f.domain) return true;
+            const isClustered = insights.clusters.some(c => c.members.includes(f.domain));
+            return !isClustered;
+        });
+
+        const clusters = insights.clusters.map(c => ({
+            id: `cluster-${c.pattern}`,
+            domain: c.pattern,
+            type: 'infrastructure_group',
+            value: `${c.members.length} hosts`,
+            severity: c.outlier_vulnerabilities.length > 0 ? 'high' : 'info',
+            context: `Hosts: ${c.members.slice(0, 3).join(', ')}${c.members.length > 3 ? '...' : ''}`,
+            cdn_waf: c.common_tech,
+            isGroup: true,
+            members: c.members
+        }));
+
+        return [...clusters, ...ungrouped];
+    })() : findings;
+
+    const filteredFindings = findingsToDisplay.filter(f => {
         // Search term filter
         const matchesSearch = searchTerm === '' || 
             f.type?.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -237,6 +273,8 @@ export default function ProjectView() {
         if (quickFilters.onlyParams) {
             if (f.type !== 'interesting_url') return false;
         }
+
+        if (hideRedirects && f.contextObj?.is_redundant) return false;
 
         return true;
     });
@@ -317,8 +355,35 @@ export default function ProjectView() {
                     </button>
                 </div>
 
+                <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+                    {insights.anomalies?.map(a => (
+                        <div key={a.tech} className="glass-panel" style={{ 
+                            padding: '6px 14px', borderRadius: '100px', fontSize: '0.7rem', fontWeight: 'bold',
+                            background: 'rgba(255, 209, 26, 0.1)', border: '1px solid #ffd11a', color: '#ffd11a',
+                            display: 'flex', alignItems: 'center', gap: '6px', animation: 'blink 2s infinite'
+                        }}>
+                            <ShieldAlert size={14} /> RARE TECH: {a.tech.toUpperCase()} ({a.rarity})
+                        </div>
+                    ))}
+                </div>
+
                 {activeTab === 'results' && (
                     <>
+                        <div className="glass-panel" style={{ display: 'flex', padding: '8px', gap: '12px', alignItems: 'center' }}>
+                            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', paddingLeft: '8px' }}>GROUPING:</span>
+                            <button 
+                                className="glass-btn" 
+                                onClick={() => setSmartGrouping(!smartGrouping)}
+                                style={{ 
+                                    padding: '4px 12px', fontSize: '0.75rem',
+                                    borderColor: smartGrouping ? 'var(--accent-color)' : 'var(--panel-border)',
+                                    color: smartGrouping ? 'var(--accent-color)' : 'var(--text-muted)',
+                                    background: smartGrouping ? 'rgba(0,255,157,0.05)' : 'transparent'
+                                }}
+                            >
+                                {smartGrouping ? 'ON (Pattern Clustering)' : 'OFF (Raw List)'}
+                            </button>
+                        </div>
                         <div className="glass-panel" style={{ flex: 1, minWidth: '300px', padding: '8px 24px', display: 'flex', alignItems: 'center', gap: '16px' }}>
                              <input
                                 type="text"
@@ -366,6 +431,18 @@ export default function ProjectView() {
                                 }}
                             >
                                 🔗 Sensitive Params
+                            </button>
+                            <button 
+                                className="glass-btn" 
+                                onClick={() => setHideRedirects(!hideRedirects)}
+                                style={{ 
+                                    fontSize: '0.75rem', padding: '4px 12px', 
+                                    borderColor: hideRedirects ? '#60a5fa' : 'var(--panel-border)',
+                                    color: hideRedirects ? '#60a5fa' : 'var(--text-muted)',
+                                    background: hideRedirects ? 'rgba(96,165,250,0.05)' : 'transparent'
+                                }}
+                            >
+                                🔇 Hide Redirects
                             </button>
                         </div>
                     </>
@@ -438,6 +515,11 @@ export default function ProjectView() {
                                                     >
                                                         {domain}
                                                     </h3>
+                                                    {domain.includes('[n]') && (
+                                                        <span style={{ fontSize: '0.65rem', padding: '2px 6px', background: 'rgba(96, 165, 250, 0.2)', color: '#60a5fa', border: '1px solid #60a5fa', borderRadius: '4px', fontWeight: 'bold' }}>
+                                                            CLUSTER GROUP
+                                                        </span>
+                                                    )}
                                                     {/(dev|staging|test|qa|beta|old|internal)/i.test(domain) && (
                                                         <span style={{ fontSize: '0.65rem', padding: '2px 6px', background: 'rgba(255, 122, 0, 0.2)', color: '#ff7a00', border: '1px solid #ff7a00', borderRadius: '4px', fontWeight: 'bold' }}>
                                                             SMART TARGET
@@ -539,39 +621,43 @@ export default function ProjectView() {
                     </div>
                 ) : activeTab === 'api' ? (
                     <div className="glass-panel" style={{ flex: 1, padding: '24px', overflowY: 'auto' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '32px', borderBottom: '1px solid var(--panel-border)', paddingBottom: '16px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '24px', borderBottom: '1px solid var(--panel-border)', paddingBottom: '16px' }}>
                             <Cpu size={24} color="var(--accent-color)" />
-                            <h2 style={{ margin: 0 }}>API Inventory & Endpoint Collector</h2>
+                            <h2 style={{ margin: 0 }}>Endpoint Aggregator (Normalized)</h2>
                         </div>
                         
-                        <div style={{ overflowX: 'auto' }}>
-                            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
-                                <thead>
-                                    <tr style={{ textAlign: 'left', borderBottom: '1px solid var(--panel-border)', color: 'var(--text-muted)' }}>
-                                        <th style={{ padding: '12px' }}>Endpoint</th>
-                                        <th style={{ padding: '12px' }}>Method</th>
-                                        <th style={{ padding: '12px' }}>Host</th>
-                                        <th style={{ padding: '12px' }}>Context</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {findings.filter(f => f.type === 'endpoint' || f.type === 'interesting_url').map((f, i) => {
-                                        const hasParams = f.value.includes('?') || f.value.includes('=');
-                                        const c = f.contextObj || {};
-                                        return (
-                                            <tr key={i} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', background: hasParams ? 'rgba(0, 255, 157, 0.05)' : 'transparent' }}>
-                                                <td style={{ padding: '12px', fontFamily: 'var(--font-mono)', fontWeight: hasParams ? 'bold' : 'normal' }}>
-                                                    {f.value}
-                                                    {hasParams && <span style={{ marginLeft: '8px', fontSize: '0.6rem', padding: '2px 4px', background: 'var(--accent-color)', color: '#000', borderRadius: '4px' }}>PARAM DETECTED</span>}
-                                                </td>
-                                                <td style={{ padding: '12px' }}><span style={{ color: 'var(--accent-color)' }}>{c.method || (f.type === 'interesting_url' ? 'GET' : 'API')}</span></td>
-                                                <td style={{ padding: '12px' }}>{f.domain}</td>
-                                                <td style={{ padding: '12px', color: 'var(--text-muted)', fontSize: '0.8rem' }}>{f.context}</td>
-                                            </tr>
-                                        );
-                                    })}
-                                </tbody>
-                            </table>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(400px, 1fr))', gap: '20px' }}>
+                            {insights.apiInventory?.map((aggr, idx) => (
+                                <div key={idx} className="glass-panel" style={{ padding: '20px', borderLeft: '3px solid var(--accent-color)', background: 'rgba(255,255,255,0.02)' }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
+                                        <div style={{ fontFamily: 'var(--font-mono)', fontSize: '1rem', color: 'var(--accent-color)', wordBreak: 'break-all', flex: 1 }}>
+                                            {aggr.path}
+                                        </div>
+                                        <div style={{ fontSize: '0.7rem', padding: '2px 8px', background: 'var(--panel-border)', borderRadius: '100px' }}>
+                                            {aggr.count} total
+                                        </div>
+                                    </div>
+                                    
+                                    <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
+                                        {aggr.methods.map(m => (
+                                            <span key={m} style={{ fontSize: '0.65rem', padding: '2px 6px', background: m==='GET' ? 'rgba(0,255,157,0.1)' : 'rgba(0,192,255,0.1)', color: m==='GET' ? '#00ff9d' : '#00c0ff', borderRadius: '4px', fontWeight: 'bold' }}>
+                                                {m}
+                                            </span>
+                                        ))}
+                                    </div>
+
+                                    <div style={{ borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '12px' }}>
+                                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '6px', fontWeight: 'bold', textTransform: 'uppercase' }}>Found on {aggr.hosts.length} targets:</div>
+                                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                                            {aggr.hosts.slice(0, 5).map(h => (
+                                                <span key={h} style={{ fontSize: '0.7rem', padding: '2px 6px', background: 'rgba(255,255,255,0.05)', borderRadius: '4px', fontFamily: 'var(--font-mono)' }}>{h}</span>
+                                            ))}
+                                            {aggr.hosts.length > 5 && <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>+{aggr.hosts.length - 5} more</span>}
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+                            {insights.apiInventory?.length === 0 && <div className="text-muted">No endpoints discovered yet.</div>}
                         </div>
                     </div>
                 ) : (
@@ -592,22 +678,25 @@ export default function ProjectView() {
                                     return acc;
                                 }, {})
                             ).map(([ip, data]) => {
-                                const isOrigin = ip !== 'Undiscovered IP' && [...data.wafs].length === 0;
+                                const isConfirmedOrigin = findings.some(f => f.type === 'origin_found' && (f.value === ip || f.contextObj?.ip === ip));
+                                const isHeuristicOrigin = ip !== 'Undiscovered IP' && [...data.wafs].length === 0;
+                                const isOrigin = isConfirmedOrigin || isHeuristicOrigin;
+
                                 return (
                                     <div key={ip} className="glass-panel" style={{ 
                                         padding: '20px', minWidth: '280px', flex: 1, 
-                                        borderLeft: `4px solid ${isOrigin ? '#ff4d00' : 'var(--accent-color)'}`,
+                                        borderLeft: `4px solid ${isConfirmedOrigin ? '#ff4d00' : isOrigin ? '#ff9d00' : 'var(--accent-color)'}`,
                                         position: 'relative',
                                         background: isOrigin ? 'rgba(255, 77, 0, 0.05)' : 'rgba(255,255,255,0.03)'
                                     }}>
                                         {isOrigin && (
-                                            <div style={{ position: 'absolute', top: '10px', right: '10px', display: 'flex', alignItems: 'center', gap: '4px', color: '#ff4d00', fontSize: '0.65rem', fontWeight: 'bold' }}>
-                                                <Flame size={14} /> ORIGIN SERVER
+                                            <div style={{ position: 'absolute', top: '10px', right: '10px', display: 'flex', alignItems: 'center', gap: '4px', color: isConfirmedOrigin ? '#ff4d00' : '#ff9d00', fontSize: '0.65rem', fontWeight: 'bold' }}>
+                                                <Flame size={14} /> {isConfirmedOrigin ? 'CONFIRMED ORIGIN' : 'HEURISTIC ORIGIN'}
                                             </div>
                                         )}
                                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
-                                            <Database size={18} color={isOrigin ? '#ff4d00' : 'var(--accent-color)'} />
-                                            <strong style={{ fontSize: '1.1rem', fontFamily: 'var(--font-mono)', color: isOrigin ? '#ff4d00' : 'inherit' }}>{ip}</strong>
+                                            <Database size={18} color={isConfirmedOrigin ? '#ff4d00' : isOrigin ? '#ff9d00' : 'var(--accent-color)'} />
+                                            <strong style={{ fontSize: '1.1rem', fontFamily: 'var(--font-mono)', color: isConfirmedOrigin ? '#ff4d00' : isOrigin ? '#ff9d00' : 'inherit' }}>{ip}</strong>
                                         </div>
                                         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                                             <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Connected Assets:</span>

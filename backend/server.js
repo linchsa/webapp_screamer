@@ -342,6 +342,52 @@ io.on('connection', (socket) => {
                     }
                 }
 
+                // New: Process httpx JSON results for Redirect/Soft-200 detection
+                const httpxFile = path.join(projectDir, 'httpx_results.json');
+                if (fs.existsSync(httpxFile)) {
+                    try {
+                        const content = fs.readFileSync(httpxFile, 'utf8');
+                        const results = content.split('\n').filter(l => l.trim()).map(l => JSON.parse(l));
+                        
+                        // Get main domain title for comparison
+                        const mainHost = results.find(r => r.input === project.target) || results[0];
+                        const mainTitle = mainHost?.title || "";
+
+                        for (const r of results) {
+                            const isRedirect = r.url !== r.input && !r.url.startsWith(r.input);
+                            const isSoft200 = r.title && r.title === mainTitle && r.input !== project.target;
+                            
+                            if (isRedirect || isSoft200) {
+                                await dbRepo.query('UPDATE findings SET context = context || $1 WHERE project_id = $2 AND domain = $3 AND type = $4',
+                                    [JSON.stringify({ is_redundant: true, final_url: r.url, reason: isSoft200 ? 'Soft-200 (Home Match)' : 'Redirect' }), projectId, r.input, 'subdomain']);
+                            }
+                        }
+                    } catch (err) {
+                        console.error("[ERR] Processing httpx results:", err);
+                    }
+                }
+
+                // New: Process Nmap results for Origin Detection
+                const nmapFile = path.join(projectDir, 'nmap_results.txt');
+                if (fs.existsSync(nmapFile)) {
+                    try {
+                        const content = fs.readFileSync(nmapFile, 'utf8');
+                        // Automated Origin Verification: If Nmap found open ports and we don't see CDN headers
+                        const hasDirectWeb = content.includes('80/tcp open') || content.includes('443/tcp open');
+                        const cdnHeaders = ['cloudflare', 'akamai', 'cloudfront', 'incapsula', 'fastly'];
+                        const hasCDN = cdnHeaders.some(cdn => content.toLowerCase().includes(cdn));
+
+                        if (hasDirectWeb && !hasCDN) {
+                            // High confidence origin found
+                            await dbRepo.query('INSERT INTO findings (project_id, domain, type, value, context, severity) VALUES ($1, $2, $3, $4, $5, $6)',
+                                [projectId, 'Infrastructure', 'origin_found', project.target, JSON.stringify({ ip: project.target, confidence: 'high', evidence: 'Direct web response with no CDN heuristics' }), 'high']);
+                            io.emit('scan-log', { projectId, log: `[SYSTEM] 🎯 ORIGIN SERVER CONFIRMED: ${project.target}` });
+                        }
+                    } catch (err) {
+                        console.error("[ERR] Processing Nmap results:", err);
+                    }
+                }
+
                 io.emit('scan-log', { projectId, log: `[SYSTEM] Scan finished with exit code ${code}` });
                 io.emit('scan-finished', { projectId });
             });
@@ -468,6 +514,68 @@ app.get('/api/projects/:id/findings', async (req, res) => {
     try {
         const result = await dbRepo.query('SELECT * FROM findings WHERE project_id = $1 ORDER BY timestamp DESC', [req.params.id]);
         res.json(result.rows);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/projects/:id/insights', async (req, res) => {
+    const { id } = req.params;
+    try {
+        const result = await dbRepo.query('SELECT * FROM findings WHERE project_id = $1', [id]);
+        const findings = result.rows;
+
+        // 1. Smart Subdomain Clustering
+        const clusters = {};
+        findings.forEach(f => {
+            if (!f.domain) return;
+            const match = f.domain.match(/^([a-zA-Z-]+)(\d+)\.(.+)$/);
+            const key = match ? `${match[1]}[n].${match[3]}` : 'ungrouped';
+            
+            if (!clusters[key]) clusters[key] = { pattern: key, members: [], common_tech: f.cdn_waf, outlier_vulnerabilities: [] };
+            clusters[key].members.push(f.domain);
+            if (f.severity === 'high' || f.severity === 'critical') {
+                clusters[key].outlier_vulnerabilities.push({ domain: f.domain, type: f.type, severity: f.severity });
+            }
+        });
+
+        // 2. API Endpoint Aggregation
+        const apiAggregation = {};
+        findings.filter(f => f.type === 'endpoint' || f.type === 'interesting_url').forEach(f => {
+            let normalized = f.value.split('?')[0]; // strip params
+            normalized = normalized.replace(/\/\d+/g, '/{ID}')
+                                   .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, '{UUID}');
+            
+            if (!apiAggregation[normalized]) apiAggregation[normalized] = { path: normalized, count: 0, hosts: new Set(), methods: new Set() };
+            apiAggregation[normalized].count++;
+            apiAggregation[normalized].hosts.add(f.domain);
+            
+            let ctx = f.context;
+            try { if (typeof ctx === 'string') ctx = JSON.parse(ctx); } catch(e){}
+            if (ctx?.method) apiAggregation[normalized].methods.add(ctx.method);
+        });
+
+        // Convert Sets for JSON
+        Object.values(apiAggregation).forEach(a => {
+            a.hosts = Array.from(a.hosts);
+            a.methods = Array.from(a.methods);
+        });
+
+        // 3. Unusual Technology Detection (<5%)
+        const techCounts = {};
+        findings.forEach(f => {
+            if (f.cdn_waf) techCounts[f.cdn_waf] = (techCounts[f.cdn_waf] || 0) + 1;
+        });
+        const totalHosts = new Set(findings.map(f => f.domain)).size;
+        const anomalies = Object.entries(techCounts)
+            .filter(([tech, count]) => (count / totalHosts) < 0.05)
+            .map(([tech, count]) => ({ tech, count, rarity: (count / totalHosts * 100).toFixed(2) + '%' }));
+
+        res.json({
+            clusters: Object.values(clusters).filter(c => c.members.length > 2),
+            apiInventory: Object.values(apiAggregation),
+            anomalies
+        });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }

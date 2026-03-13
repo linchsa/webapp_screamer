@@ -42,11 +42,11 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Go 1.22 from upstream (apt version in Kali is too old for katana/httpx)
+# Install Go 1.24.0
 RUN cd /tmp \
-    && wget -q https://go.dev/dl/go1.22.5.linux-amd64.tar.gz \
-    && tar -C /usr/local -xzf go1.22.5.linux-amd64.tar.gz \
-    && rm go1.22.5.linux-amd64.tar.gz
+    && wget -q https://go.dev/dl/go1.24.0.linux-amd64.tar.gz \
+    && tar -C /usr/local -xzf go1.24.0.linux-amd64.tar.gz \
+    && rm go1.24.0.linux-amd64.tar.gz
 
 # Set up Go Paths
 ENV GOPATH=/root/go

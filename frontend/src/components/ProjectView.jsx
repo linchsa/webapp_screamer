@@ -165,21 +165,16 @@ export default function ProjectView() {
         a.click();
     };
 
-    const handleIndividualScan = async (domain) => {
-        try {
-            setLogs(prev => [...prev, `[SYSTEM] Requesting individual deep scan for: ${domain}`]);
-            const res = await fetch(`${API_URL}/api/scans/individual`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ projectId: parseInt(id), domain, header: customHeader })
-            });
-            const data = await res.json();
-            if (data.success) {
-                // Individual scan started
-            }
-        } catch (err) {
-            console.error(err);
-        }
+    const handleIndividualScan = (domain) => {
+        if (!socketRef.current) return;
+        setLogs(prev => [...prev, `[SYSTEM] Requesting individual deep scan for: ${domain}`]);
+        socketRef.current.emit('start-individual-scan', {
+            projectId: parseInt(id),
+            domain,
+            header: customHeader
+        });
+        setScanActive(true);
+        setActiveTab('logs');
     };
 
     const handleViewCode = async (finding) => {
@@ -200,7 +195,7 @@ export default function ProjectView() {
             const res = await fetch(`${API_URL}/api/projects/${id}/assets/view?filePath=${encodeURIComponent(assetPath)}`);
             if (res.ok) {
                 const content = await res.text();
-                setViewCode(content);
+                setViewCode({ path: assetPath, content, finding });
             } else {
                 throw new Error('Could not fetch file content');
             }
@@ -211,13 +206,13 @@ export default function ProjectView() {
     };
 
     const handleScanIP = (ip) => {
-        if (!socket) return;
-        socket.emit('start-ip-scan', { projectId: parseInt(id), ip, header: customHeader });
+        if (!socketRef.current) return;
+        socketRef.current.emit('start-ip-scan', { projectId: parseInt(id), ip, header: customHeader });
     };
 
     const handleDnsRetry = (domain) => {
-        if (!socket) return;
-        socket.emit('dns-retry', { projectId: parseInt(id), domain });
+        if (!socketRef.current) return;
+        socketRef.current.emit('dns-retry', { projectId: parseInt(id), domain });
     };
 
 

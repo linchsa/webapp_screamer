@@ -78,17 +78,29 @@ async function initDb() {
 initDb();
 
 // Active Scans Tracking
+const dns = require('dns');
+
+// ... (existing code)
+
+// Helper to find the latest project directory
+const getLatestProjectDir = (target) => {
+    const baseDir = path.join(__dirname, '..', 'app_data', 'projects');
+    if (!fs.existsSync(baseDir)) return null;
+    const projTargetSnippet = target.replace('*', 'all');
+    const dirs = fs.readdirSync(baseDir)
+        .filter(d => d.includes(projTargetSnippet))
+        .sort((a,b) => fs.statSync(path.join(baseDir, b)).mtime - fs.statSync(path.join(baseDir, a)).mtime);
+    return dirs.length > 0 ? path.join(baseDir, dirs[0]) : null;
+};
+
 app.get('/api/projects/:id/screenshots/:domain', (req, res) => {
     const { id, domain } = req.params;
     dbRepo.query('SELECT target FROM projects WHERE id = $1', [id]).then(projRes => {
         if (projRes.rows.length === 0) return res.status(404).json({ error: 'Project not found' });
-        const baseDir = path.join(__dirname, '..', 'app_data', 'projects');
-        const projTargetSnippet = projRes.rows[0].target.replace('*', 'all');
-        const dirs = fs.readdirSync(baseDir)
-            .filter(d => d.startsWith(projTargetSnippet))
-            .sort((a,b) => fs.statSync(path.join(baseDir, b)).mtime - fs.statSync(path.join(baseDir, a)).mtime);
-        if (dirs.length === 0) return res.status(404).json({ error: 'Project directory not found' });
-        const screenshotPath = path.join(baseDir, dirs[0], 'screenshots', `${domain}.png`);
+        const dir = getLatestProjectDir(projRes.rows[0].target);
+        if (!dir) return res.status(404).json({ error: 'Project directory not found' });
+        
+        const screenshotPath = path.join(dir, 'screenshots', `${domain}.png`);
         if (fs.existsSync(screenshotPath)) res.sendFile(screenshotPath);
         else res.status(404).send('Screenshot not found');
     });
@@ -101,19 +113,16 @@ app.get('/api/projects/:id/assets/view', (req, res) => {
 
     dbRepo.query('SELECT target FROM projects WHERE id = $1', [id]).then(projRes => {
         if (projRes.rows.length === 0) return res.status(404).json({ error: 'Project not found' });
-        const baseDir = path.join(__dirname, '..', 'app_data', 'projects');
-        const projTargetSnippet = projRes.rows[0].target.replace('*', 'all');
-        const dirs = fs.readdirSync(baseDir)
-            .filter(d => d.startsWith(projTargetSnippet))
-            .sort((a,b) => fs.statSync(path.join(baseDir, b)).mtime - fs.statSync(path.join(baseDir, a)).mtime);
-        if (dirs.length === 0) return res.status(404).json({ error: 'Project directory not found' });
-        const assetPath = path.join(baseDir, dirs[0], 'assets', filePath);
-        const rootPath = path.join(baseDir, dirs[0], filePath);
+        const dir = getLatestProjectDir(projRes.rows[0].target);
+        if (!dir) return res.status(404).json({ error: 'Project directory not found' });
+        
+        const assetPath = path.join(dir, 'assets', filePath);
+        const rootPath = path.join(dir, filePath);
         
         let finalPath = fs.existsSync(assetPath) ? assetPath : (fs.existsSync(rootPath) ? rootPath : null);
 
         // Safety check
-        if (finalPath && !finalPath.startsWith(baseDir)) {
+        if (finalPath && !finalPath.startsWith(path.join(__dirname, '..', 'app_data'))) {
             return res.status(403).json({ error: 'Access denied' });
         }
 
@@ -123,7 +132,7 @@ app.get('/api/projects/:id/assets/view', (req, res) => {
         } else {
             // Fallback for Demo/Mock findings if file not physically there
             if (filePath.includes('.yml') || filePath.includes('.config') || filePath.includes('.js')) {
-                const mockContent = `// Simulated Source Code for: ${filePath}\n// ------------------------------------------\n// The requested asset was identified during scan.\n// In a real environment, Playwright would download this to projects/${dirs[0]}/assets/\n\nconst AWS_KEY = "AKIARED-SECRET-MOCK-CONTENT";\nconst API_SECRET = "db-prod-master-key-12345";\n\nfunction init() {\n    console.log("Initializing secure connection...");\n}`;
+                const mockContent = `// Simulated Source Code for: ${filePath}\n// ------------------------------------------\n// The requested asset was identified during scan.\n// Path: ${filePath}\n\nconst AWS_KEY = "AKIARED-SECRET-MOCK-CONTENT";\nconst API_SECRET = "db-prod-master-key-12345";\n\nfunction init() {\n    console.log("Initializing secure connection...");\n}`;
                 res.send(mockContent);
             } else {
                 res.status(404).send('File not found');
@@ -211,19 +220,19 @@ const generateMockFinding = (projectId, baseTarget) => {
 io.on('connection', (socket) => {
     socket.on('dns-retry', async (data) => {
         const { projectId, domain } = data;
-        io.emit('scan-log', { projectId, log: `[DNS] Retrying resolution for ${domain}...` });
+        io.emit('scan-log', { projectId, log: `[DNS] Native resolution retry for ${domain}...` });
         
-        const { exec } = require('child_process');
-        exec(`dig +short ${domain}`, async (err, stdout) => {
-            const ip = stdout.trim().split('\n')[0];
-            if (ip && /^[0-9.]+$/.test(ip)) {
+        try {
+            const addresses = await dns.promises.resolve4(domain);
+            const ip = addresses[0];
+            if (ip) {
                 await dbRepo.query('UPDATE findings SET context = jsonb_set(context::jsonb, \'{ip}\', $1::jsonb) WHERE project_id = $2 AND domain = $3', [JSON.stringify(ip), projectId, domain]);
                 io.emit('scan-log', { projectId, log: `[DNS] Successfully resolved ${domain} to ${ip}` });
-                io.emit('scan-log', { projectId, log: `[SYSTEM] Refreshing Target Map...` });
-            } else {
-                io.emit('scan-log', { projectId, log: `[DNS] Could not resolve ${domain}. Check if domain is alive.` });
+                io.emit('scan-log', { projectId, log: `[SYSTEM] Target Map updated.` });
             }
-        });
+        } catch (err) {
+            io.emit('scan-log', { projectId, log: `[DNS] Resolution failed for ${domain}: ${err.code}` });
+        }
     });
 
     const handleCredentialReuse = async (projectId, finding) => {
@@ -245,8 +254,9 @@ io.on('connection', (socket) => {
     };
     socket.on('start-scan', (data) => {
         const { projectId, target, header, projectName } = data;
-        if (activeScans.has(projectId)) {
-            socket.emit('scan-log', { projectId, log: '[SYSTEM] Scan is already running for this project.' });
+        const scanKey = `project-${projectId}`;
+        if (activeScans.has(scanKey)) {
+            socket.emit('scan-log', { projectId, log: '[SYSTEM] A full scan is already running for this project.' });
             return;
         }
 
@@ -272,7 +282,7 @@ io.on('connection', (socket) => {
                 });
             }, 3000);
 
-            activeScans.set(projectId, {
+            activeScans.set(scanKey, {
                 projectId,
                 projectName: projectName || `Project #${projectId}`,
                 target,
@@ -292,9 +302,9 @@ io.on('connection', (socket) => {
             });
 
             scannerProcess.on('close', async (code) => {
-                if (activeScans.has(projectId)) {
-                    clearInterval(activeScans.get(projectId).mockInterval);
-                    activeScans.delete(projectId);
+                if (activeScans.has(scanKey)) {
+                    clearInterval(activeScans.get(scanKey).mockInterval);
+                    activeScans.delete(scanKey);
                 }
 
                 // Process JS Monitoring Hashes
@@ -340,7 +350,8 @@ io.on('connection', (socket) => {
 
     socket.on('start-ip-scan', (data) => {
         const { projectId, ip, header } = data;
-        if (activeScans.has(`ip-${projectId}-${ip}`)) {
+        const scanKey = `ip-${projectId}-${ip}`;
+        if (activeScans.has(scanKey)) {
             socket.emit('scan-log', { projectId, log: `[SYSTEM] IP Scan already running for ${ip}.` });
             return;
         }
@@ -355,28 +366,54 @@ io.on('connection', (socket) => {
             
             const scannerProcess = spawn('bash', ['./scripts/scanner.sh', ip, header, projectDir, profile], { env });
             
-            activeScans.set(`ip-${projectId}-${ip}`, { projectId, ip, scannerProcess });
+            activeScans.set(scanKey, { projectId, ip, scannerProcess, startTime: Date.now(), type: 'ip-audit' });
 
             io.emit('scan-log', { projectId, log: `[SYSTEM] Direct Infrastructure Scan started for IP: ${ip}` });
 
             scannerProcess.stdout.on('data', (data) => io.emit('scan-log', { projectId, log: data.toString() }));
             scannerProcess.on('close', (code) => {
-                activeScans.delete(`ip-${projectId}-${ip}`);
-                io.emit('scan-log', { projectId, log: `[SYSTEM] IP Scan for ${ip} finished.` });
+                activeScans.delete(scanKey);
+                io.emit('scan-log', { projectId, log: `[SYSTEM] IP Scan for ${ip} finished (Key: ${scanKey}).` });
             });
+        });
+    });
+
+    socket.on('start-individual-scan', (data) => {
+        const { projectId, domain, header } = data;
+        const scanKey = `individual-${projectId}-${domain}`;
+        if (activeScans.has(scanKey)) {
+            socket.emit('scan-log', { projectId, log: `[SYSTEM] Individual scan already running for ${domain}.` });
+            return;
+        }
+
+        const projectDir = path.join(__dirname, '..', 'app_data', 'projects', `indiv-${domain}-${Date.now()}`);
+        if (!fs.existsSync(projectDir)) fs.mkdirSync(projectDir, { recursive: true });
+
+        const profile = 'full';
+        const scannerProcess = spawn('bash', ['./scripts/scanner.sh', domain, header, projectDir, profile]);
+        
+        activeScans.set(scanKey, { projectId, domain, scannerProcess, startTime: Date.now(), type: 'individual' });
+        io.emit('scan-log', { projectId, log: `[SYSTEM] Individual deep recon started for: ${domain}` });
+
+        scannerProcess.stdout.on('data', (data) => io.emit('scan-log', { projectId, log: data.toString() }));
+        scannerProcess.on('close', () => {
+            activeScans.delete(scanKey);
+            io.emit('scan-log', { projectId, log: `[SYSTEM] Individual scan for ${domain} complete.` });
         });
     });
 
     socket.on('stop-scan', (stopData) => {
         const { projectId } = stopData;
-        if (activeScans.has(projectId)) {
-            const scan = activeScans.get(projectId);
-            clearInterval(scan.mockInterval);
-            scan.scannerProcess.kill('SIGINT');
-            activeScans.delete(projectId);
-            io.emit('scan-log', { projectId, log: `[SYSTEM] Scan stopped by user.` });
-            io.emit('scan-finished', { projectId });
+        // Stop all scans related to this project (Full, IP, Individual)
+        for (const [key, scan] of activeScans.entries()) {
+            if (scan.projectId === projectId || scan.projectId === parseInt(projectId)) {
+                if (scan.mockInterval) clearInterval(scan.mockInterval);
+                if (scan.scannerProcess) scan.scannerProcess.kill('SIGINT');
+                activeScans.delete(key);
+                io.emit('scan-log', { projectId, log: `[SYSTEM] Stopped scan task: ${key}` });
+            }
         }
+        io.emit('scan-finished', { projectId });
     });
 
     socket.on('disconnect', () => {
@@ -460,34 +497,7 @@ app.get('/api/scans/active', (req, res) => {
     res.json(scansList);
 });
 
-app.post('/api/scans/individual', async (req, res) => {
-    const { projectId, domain, header } = req.body;
-    console.log(`[SYSTEM] Starting INDIVIDUAL scan for ${domain} in project ${projectId}`);
-    
-    io.emit('scan-log', { projectId, log: `[SYSTEM] Individual deep recon started for: ${domain}` });
-    
-    setTimeout(async () => {
-        const mockFinding = {
-            project_id: projectId,
-            domain: domain,
-            type: 'port',
-            value: '8080',
-            context: JSON.stringify({ service: 'http-alt', banner: 'Jetty/9.4.z' }),
-            severity: 'low'
-        };
-        try {
-            await dbRepo.query(
-                'INSERT INTO findings (project_id, domain, type, value, context, severity) VALUES ($1, $2, $3, $4, $5, $6)',
-                [mockFinding.project_id, mockFinding.domain, mockFinding.type, mockFinding.value, mockFinding.context, mockFinding.severity]
-            );
-            io.emit('scan-log', { projectId, log: `[SYSTEM] Individual Scan on ${domain} found open port 8080.` });
-        } catch (err) {
-            console.error(err);
-        }
-    }, 5000);
-
-    res.json({ success: true, message: `Individual scan queued for ${domain}` });
-});
+// Basic API endpoints removed:Individual scan moved to socket
 
 // Settings API
 app.get('/api/settings', async (req, res) => {

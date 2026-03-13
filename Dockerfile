@@ -3,6 +3,9 @@ FROM kalilinux/kali-rolling
 # Avoid interactive dialogs during apt-get
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Override apt sources to use official Kali mirror via HTTP only (avoids SSL CDN issues in Docker)
+RUN echo "deb http://http.kali.org/kali kali-rolling main contrib non-free non-free-firmware" > /etc/apt/sources.list
+
 # Update and install base dependencies (no golang from apt - we install Go manually below)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \

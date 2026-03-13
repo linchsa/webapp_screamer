@@ -7,7 +7,7 @@ export default function Sidebar() {
         <aside className="sidebar glass-panel">
             <div className="brand">
                 <ShieldAlert size={28} className="brand-icon" />
-                <span>BountyUI</span>
+                <span>Webapp Screamer</span>
             </div>
 
             <nav style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>

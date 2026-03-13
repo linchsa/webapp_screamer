@@ -4,6 +4,7 @@ import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
 import ProjectView from './components/ProjectView';
 import ActiveScans from './components/ActiveScans';
+import Settings from './components/Settings';
 
 function App() {
   return (
@@ -15,6 +16,7 @@ function App() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/project/:id" element={<ProjectView />} />
             <Route path="/scans" element={<ActiveScans />} />
+            <Route path="/settings" element={<Settings />} />
           </Routes>
         </main>
       </div>

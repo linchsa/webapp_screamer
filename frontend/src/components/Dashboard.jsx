@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Globe, ShieldAlert, Cpu, X, Activity } from 'lucide-react';
+import { Plus, Globe, ShieldAlert, Cpu, X, Activity, Trash2 } from 'lucide-react';
 
 const API_URL = 'http://localhost:3000';
 
@@ -52,6 +52,18 @@ export default function Dashboard() {
         }
     };
 
+    const handleDeleteProject = async (id, e) => {
+        e.stopPropagation();
+        if (window.confirm('Are you sure you want to delete this project and all its findings?')) {
+            try {
+                await fetch(`${API_URL}/api/projects/${id}`, { method: 'DELETE' });
+                fetchProjects();
+            } catch (err) {
+                console.error('Error deleting project', err);
+            }
+        }
+    };
+
     const handleOptionChange = (option) => {
         setNewProject({
             ...newProject,
@@ -78,20 +90,26 @@ export default function Dashboard() {
                         key={p.id}
                         className="project-card glass-panel"
                         onClick={() => navigate(`/project/${p.id}`)}
-                        style={{ cursor: 'pointer', borderTop: `4px solid ${p.color || 'var(--accent-color)'}` }}
+                        style={{ cursor: 'pointer', borderTop: `4px solid ${p.color || 'var(--accent-color)'}`, position: 'relative' }}
                     >
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                            <h2 className="project-title">{p.name}</h2>
-                            <Globe size={20} color={p.color || "var(--accent-color)"} />
+                            <h2 className="project-title" style={{ paddingRight: '30px' }}>{p.name}</h2>
+                            <button 
+                                onClick={(e) => handleDeleteProject(p.id, e)} 
+                                style={{ background: 'transparent', border: 'none', cursor: 'pointer', position: 'absolute', top: '16px', right: '16px' }}
+                                title="Delete Project"
+                            >
+                                <Trash2 size={20} color="var(--danger-color)" />
+                            </button>
                         </div>
 
-                        <span className="project-target" style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>{p.target}</span>
+                        <span className="project-target" style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-muted)', display: 'block', marginTop: '8px' }}>{p.target}</span>
 
-                        <div className="project-stats" style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
+                        <div className="project-stats" style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', marginTop: '16px' }}>
                             <div className="stat">
                                 <span className="stat-label">Total Findings</span>
                                 <span className="stat-value" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                    <Activity size={16} color="var(--accent-color)" /> {p.findingsCount || 0}
+                                    <Activity size={16} color={p.color || "var(--accent-color)"} /> {p.findingsCount || 0}
                                 </span>
                             </div>
                         </div>

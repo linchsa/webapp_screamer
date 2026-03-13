@@ -107,14 +107,46 @@ app.get('/api/projects/:id/assets/view', (req, res) => {
             .filter(d => d.startsWith(projTargetSnippet))
             .sort((a,b) => fs.statSync(path.join(baseDir, b)).mtime - fs.statSync(path.join(baseDir, a)).mtime);
         if (dirs.length === 0) return res.status(404).json({ error: 'Project directory not found' });
-        const absolutePath = path.join(baseDir, dirs[0], 'assets', filePath);
-        if (!absolutePath.startsWith(baseDir)) return res.status(403).json({ error: 'Access denied' });
-        if (fs.existsSync(absolutePath)) {
-            const content = fs.readFileSync(absolutePath, 'utf8');
+        const assetPath = path.join(baseDir, dirs[0], 'assets', filePath);
+        const rootPath = path.join(baseDir, dirs[0], filePath);
+        
+        let finalPath = fs.existsSync(assetPath) ? assetPath : (fs.existsSync(rootPath) ? rootPath : null);
+
+        // Safety check
+        if (finalPath && !finalPath.startsWith(baseDir)) {
+            return res.status(403).json({ error: 'Access denied' });
+        }
+
+        if (finalPath) {
+            const content = fs.readFileSync(finalPath, 'utf8');
             res.send(content);
-        } else res.status(404).send('File not found');
+        } else {
+            // Fallback for Demo/Mock findings if file not physically there
+            if (filePath.includes('.yml') || filePath.includes('.config') || filePath.includes('.js')) {
+                const mockContent = `// Simulated Source Code for: ${filePath}\n// ------------------------------------------\n// The requested asset was identified during scan.\n// In a real environment, Playwright would download this to projects/${dirs[0]}/assets/\n\nconst AWS_KEY = "AKIARED-SECRET-MOCK-CONTENT";\nconst API_SECRET = "db-prod-master-key-12345";\n\nfunction init() {\n    console.log("Initializing secure connection...");\n}`;
+                res.send(mockContent);
+            } else {
+                res.status(404).send('File not found');
+            }
+        }
     });
 });
+
+// Helper to verify if an endpoint is accessible without the custom header
+const performUnauthCheck = async (projectId, url) => {
+    try {
+        const response = await fetch(url, { method: 'HEAD', signal: AbortSignal.timeout(5000) });
+        if (response.ok) {
+            await dbRepo.query(
+                'INSERT INTO findings (project_id, domain, type, value, context, severity) VALUES ($1, $2, $3, $4, $5, $6)',
+                [projectId, new URL(url).hostname, 'security_alert', url, `Potentially Insecure: Endpoint reachable without Bug Bounty header (Status: ${response.status})`, 'high']
+            );
+            io.emit('scan-log', { projectId, log: `[SECURITY] CRITICAL: Unauthenticated access permitted to ${url}!` });
+        }
+    } catch (err) {
+        // Expected failure or timeout is often a good sign (protected)
+    }
+};
 
 const activeScans = new Map();
 
@@ -150,8 +182,10 @@ const generateMockFinding = (projectId, baseTarget) => {
             break;
         case 'endpoint':
             value = `/api/v1/users/${Math.floor(Math.random() * 9999)}`;
-            context = { method: 'GET', status: 200, auth_required: false };
-            severity = 'medium';
+            const isUnauth = Math.random() > 0.7;
+            context = { method: 'GET', status: 200, auth_required: !isUnauth };
+            severity = isUnauth ? 'high' : 'medium';
+            if (isUnauth) value += ' [Bypass Potential]';
             break;
         case 'wp_vuln':
             value = `CVE-2023-${Math.floor(Math.random() * 9999)}`;
@@ -265,6 +299,35 @@ io.on('connection', (socket) => {
 
                 io.emit('scan-log', { projectId, log: `[SYSTEM] Scan finished with exit code ${code}` });
                 io.emit('scan-finished', { projectId });
+            });
+        });
+    });
+
+    socket.on('start-ip-scan', (data) => {
+        const { projectId, ip, header } = data;
+        if (activeScans.has(`ip-${projectId}-${ip}`)) {
+            socket.emit('scan-log', { projectId, log: `[SYSTEM] IP Scan already running for ${ip}.` });
+            return;
+        }
+
+        const projectDir = path.join(__dirname, '..', 'app_data', 'projects', `ip-${ip}-${Date.now()}`);
+        if (!fs.existsSync(projectDir)) fs.mkdirSync(projectDir, { recursive: true });
+
+        dbRepo.query('SELECT wpscan_key, scan_profile FROM settings WHERE id = 1').then(settingsRes => {
+            const settings = settingsRes.rows[0];
+            const profile = 'full'; // Force full for direct IP audits
+            const env = { ...process.env, WPSCAN_API_TOKEN: settings?.wpscan_key || '', SCAN_PROFILE: profile };
+            
+            const scannerProcess = spawn('bash', ['./scripts/scanner.sh', ip, header, projectDir, profile], { env });
+            
+            activeScans.set(`ip-${projectId}-${ip}`, { projectId, ip, scannerProcess });
+
+            io.emit('scan-log', { projectId, log: `[SYSTEM] Direct Infrastructure Scan started for IP: ${ip}` });
+
+            scannerProcess.stdout.on('data', (data) => io.emit('scan-log', { projectId, log: data.toString() }));
+            scannerProcess.on('close', (code) => {
+                activeScans.delete(`ip-${projectId}-${ip}`);
+                io.emit('scan-log', { projectId, log: `[SYSTEM] IP Scan for ${ip} finished.` });
             });
         });
     });

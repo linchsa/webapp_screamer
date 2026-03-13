@@ -32,11 +32,20 @@ echo "[SYSTEM] Starting pipeline for $TARGET (Profile: $PROFILE)"
 echo "[SYSTEM] Output directory: $PROJECT_DIR"
 echo "[SYSTEM] Using Custom Header: $HEADER"
 
-# 1. Subdomain Discovery
-echo "[SUBFINDER] Running passive subdomain discovery..."
-subfinder -d "$TARGET" -all -silent > "$PROJECT_DIR/subdomains.txt"
-SUB_COUNT=$(wc -l < "$PROJECT_DIR/subdomains.txt")
-echo "[SUBFINDER] Found $SUB_COUNT subdomains"
+# 1. Target Detection & Domain/IP Discovery
+echo "[SYSTEM] Resolving target type..."
+if [[ $TARGET =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || [[ $TARGET =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]]; then
+    echo "[SYSTEM] Direct IP/Range target detected: $TARGET"
+    echo "$TARGET" > "$PROJECT_DIR/subdomains.txt"
+    SUB_COUNT=1
+    IS_IP=true
+else
+    echo "[SUBFINDER] Running passive subdomain discovery..."
+    subfinder -d "$TARGET" -all -silent > "$PROJECT_DIR/subdomains.txt"
+    SUB_COUNT=$(wc -l < "$PROJECT_DIR/subdomains.txt")
+    echo "[SUBFINDER] Found $SUB_COUNT subdomains"
+    IS_IP=false
+fi
 
 # 2. Alive & WAF Check
 echo "[HTTPX] Checking for live hosts..."
@@ -81,7 +90,7 @@ fi
 
 # 5. Passive URLs & Fuzzing Logic
 echo "[GAU] Fetching historical URLs..."
-if [ "$SUB_COUNT" -gt 0 ]; then
+if [ "$SUB_COUNT" -gt 0 ] && [ "$IS_IP" = false ]; then
     cat "$PROJECT_DIR/subdomains.txt" | gau > "$PROJECT_DIR/gau_urls.txt"
 else
     touch "$PROJECT_DIR/gau_urls.txt"

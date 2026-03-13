@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Play, Square, Terminal, Network, ShieldAlert, Cpu, Download, Trash2, List, TableProperties, Eye, X, Database } from 'lucide-react';
+import { ArrowLeft, Play, Square, Terminal, Network, ShieldAlert, Cpu, Download, Trash2, List, TableProperties, Eye, X, Database, Flame } from 'lucide-react';
 import io from 'socket.io-client';
 
 const API_URL = 'http://localhost:3000';
@@ -191,19 +191,29 @@ export default function ProjectView() {
         }
 
         if (!assetPath) {
-            alert("No source file associated with this finding.");
+            alert('Could not determine source path.');
             return;
         }
 
         try {
             const res = await fetch(`${API_URL}/api/projects/${id}/assets/view?filePath=${encodeURIComponent(assetPath)}`);
-            if (!res.ok) throw new Error("Could not fetch file content");
-            const text = await res.text(); 
-            setViewCode({ path: assetPath, content: text, finding });
+            if (res.ok) {
+                const content = await res.text();
+                setViewCode(content);
+            } else {
+                throw new Error('Could not fetch file content');
+            }
         } catch (err) {
-            alert("Error loading code: " + err.message);
+            console.error(err);
+            alert(`Error loading code: ${err.message}`);
         }
     };
+
+    const handleScanIP = (ip) => {
+        if (!socket) return;
+        socket.emit('start-ip-scan', { projectId: parseInt(id), ip, header: customHeader });
+    };
+
 
     // Group findings by domain with filter
     const filteredFindings = findings.filter(f => {
@@ -412,13 +422,20 @@ export default function ProjectView() {
                                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'rgba(255,255,255,0.03)', padding: '12px 16px', borderRadius: '8px', border: '1px solid var(--panel-border)', position: 'relative' }}>
                                         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                                             <div style={{ position: 'relative' }}>
-                                                <h3 
-                                                    style={{ fontFamily: 'var(--font-mono)', color: 'var(--accent-color)', margin: 0, fontSize: '1.2rem', cursor: 'help' }}
-                                                    onMouseEnter={() => setHoveredDomain(domain)}
-                                                    onMouseLeave={() => setHoveredDomain(null)}
-                                                >
-                                                    {domain}
-                                                </h3>
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                    <h3 
+                                                        style={{ fontFamily: 'var(--font-mono)', color: 'var(--accent-color)', margin: 0, fontSize: '1.2rem', cursor: 'help' }}
+                                                        onMouseEnter={() => setHoveredDomain(domain)}
+                                                        onMouseLeave={() => setHoveredDomain(null)}
+                                                    >
+                                                        {domain}
+                                                    </h3>
+                                                    {/(dev|staging|test|qa|beta|old|internal)/i.test(domain) && (
+                                                        <span style={{ fontSize: '0.65rem', padding: '2px 6px', background: 'rgba(255, 122, 0, 0.2)', color: '#ff7a00', border: '1px solid #ff7a00', borderRadius: '4px', fontWeight: 'bold' }}>
+                                                            SMART TARGET
+                                                        </span>
+                                                    )}
+                                                </div>
                                                 {hoveredDomain === domain && (
                                                     <div style={{
                                                         position: 'absolute', top: '100%', left: 0, zIndex: 100, 
@@ -526,23 +543,44 @@ export default function ProjectView() {
                                     if (f.cdn_waf) acc[ip].wafs.add(f.cdn_waf);
                                     return acc;
                                 }, {})
-                            ).map(([ip, data]) => (
-                                <div key={ip} className="glass-panel" style={{ padding: '20px', minWidth: '280px', flex: 1, borderLeft: '4px solid var(--accent-color)' }}>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
-                                        <Database size={18} color="var(--accent-color)" />
-                                        <strong style={{ fontSize: '1.1rem', fontFamily: 'var(--font-mono)' }}>{ip}</strong>
-                                    </div>
-                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                                        <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Connected Assets:</span>
-                                        {[...data.domains].map(d => (
-                                            <div key={d} style={{ fontSize: '0.9rem', padding: '4px 8px', background: 'rgba(255,255,255,0.03)', borderRadius: '4px', fontFamily: 'var(--font-mono)' }}>
-                                                {d}
-                                                {[...data.wafs].length > 0 && <span style={{ marginLeft: '8px', fontSize: '0.7rem', color: '#00d0ff' }}>({[...data.wafs].join(', ')})</span>}
+                            ).map(([ip, data]) => {
+                                const isOrigin = ip !== 'Undiscovered IP' && [...data.wafs].length === 0;
+                                return (
+                                    <div key={ip} className="glass-panel" style={{ 
+                                        padding: '20px', minWidth: '280px', flex: 1, 
+                                        borderLeft: `4px solid ${isOrigin ? '#ff4d00' : 'var(--accent-color)'}`,
+                                        position: 'relative',
+                                        background: isOrigin ? 'rgba(255, 77, 0, 0.05)' : 'rgba(255,255,255,0.03)'
+                                    }}>
+                                        {isOrigin && (
+                                            <div style={{ position: 'absolute', top: '10px', right: '10px', display: 'flex', alignItems: 'center', gap: '4px', color: '#ff4d00', fontSize: '0.65rem', fontWeight: 'bold' }}>
+                                                <Flame size={14} /> ORIGIN SERVER
                                             </div>
-                                        ))}
+                                        )}
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+                                            <Database size={18} color={isOrigin ? '#ff4d00' : 'var(--accent-color)'} />
+                                            <strong style={{ fontSize: '1.1rem', fontFamily: 'var(--font-mono)', color: isOrigin ? '#ff4d00' : 'inherit' }}>{ip}</strong>
+                                        </div>
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Connected Assets:</span>
+                                            {[...data.domains].map(d => (
+                                                <div key={d} style={{ fontSize: '0.9rem', padding: '4px 8px', background: 'rgba(255,255,255,0.03)', borderRadius: '4px', fontFamily: 'var(--font-mono)' }}>
+                                                    {d}
+                                                    {[...data.wafs].length > 0 && <span style={{ marginLeft: '8px', fontSize: '0.7rem', color: '#00d0ff' }}>({[...data.wafs].join(', ')})</span>}
+                                                </div>
+                                            ))}
+                                        </div>
+                                        
+                                        <button 
+                                            className="glass-btn" 
+                                            style={{ marginTop: '16px', width: '100%', padding: '6px', fontSize: '0.75rem', borderColor: isOrigin ? '#ff4d00' : 'var(--panel-border)' }}
+                                            onClick={() => handleScanIP(ip)}
+                                        >
+                                            SCAN INFRASTRUCTURE (IP)
+                                        </button>
                                     </div>
-                                </div>
-                            ))}
+                                );
+                            })}
                         </div>
                     </div>
                 )}

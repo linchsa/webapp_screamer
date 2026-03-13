@@ -19,25 +19,43 @@ echo "[SUBFINDER] Found $SUB_COUNT subdomains"
 
 # 2. Alive & WAF Check
 echo "[HTTPX] Checking for live hosts..."
-cat "$PROJECT_DIR/subdomains.txt" | httpx -silent -H "$HEADER" -tech-detect > "$PROJECT_DIR/alive.txt"
+if [ "$SUB_COUNT" -gt 0 ]; then
+    cat "$PROJECT_DIR/subdomains.txt" | httpx -silent -H "$HEADER" -tech-detect > "$PROJECT_DIR/alive.txt"
+else
+    echo "[HTTPX] No subdomains to check."
+    touch "$PROJECT_DIR/alive.txt"
+fi
 ALIVE_COUNT=$(wc -l < "$PROJECT_DIR/alive.txt")
 echo "[HTTPX] Found $ALIVE_COUNT live hosts"
 
 # 3. Port Scanning
 echo "[NAABU] Scanning for open ports..."
-cat "$PROJECT_DIR/subdomains.txt" | naabu -silent -p - -o "$PROJECT_DIR/ports.txt"
+if [ "$SUB_COUNT" -gt 0 ]; then
+    cat "$PROJECT_DIR/subdomains.txt" | naabu -silent -p - -o "$PROJECT_DIR/ports.txt"
+else
+    echo "[NAABU] No subdomains to scan."
+fi
 echo "[NAABU] Port scan completed. Results saved."
 
 # 4. Passive URLs
 echo "[GAU] Fetching historical URLs..."
-cat "$PROJECT_DIR/subdomains.txt" | gau > "$PROJECT_DIR/gau_urls.txt"
+if [ "$SUB_COUNT" -gt 0 ]; then
+    cat "$PROJECT_DIR/subdomains.txt" | gau > "$PROJECT_DIR/gau_urls.txt"
+else
+    touch "$PROJECT_DIR/gau_urls.txt"
+fi
 URL_COUNT=$(wc -l < "$PROJECT_DIR/gau_urls.txt")
 echo "[GAU] Found $URL_COUNT historical URLs"
 
 # 5. Active Crawling with Katana
 echo "[KATANA] Starting active crawling..."
-cat "$PROJECT_DIR/alive.txt" | katana -jc -jsl -H "$HEADER" -silent > "$PROJECT_DIR/katana_urls.txt"
-echo "[KATANA] Active crawling finished"
+if [ "$ALIVE_COUNT" -gt 0 ]; then
+    cat "$PROJECT_DIR/alive.txt" | katana -jc -jsl -H "$HEADER" -silent > "$PROJECT_DIR/katana_urls.txt"
+    echo "[KATANA] Active crawling finished"
+else
+    echo "[KATANA] No live hosts to crawl, skipping."
+    touch "$PROJECT_DIR/katana_urls.txt"
+fi
 
 # 6. Advanced Playwright Crawler & JS Analyzer
 echo "[PLAYWRIGHT] Running deep crawler and asset downloader..."
@@ -50,7 +68,7 @@ fi
 # 7. Secrets scanning
 echo "[GITLEAKS] Scanning downloaded assets for secrets..."
 if [ -d "$PROJECT_DIR/assets" ]; then
-    gitleaks detect --source="$PROJECT_DIR/assets" -v > "$PROJECT_DIR/secrets.json" || true
+    gitleaks detect --no-git --source="$PROJECT_DIR/assets" -v > "$PROJECT_DIR/secrets.json" || true
     echo "[GITLEAKS] Secret scan done."
 fi
 

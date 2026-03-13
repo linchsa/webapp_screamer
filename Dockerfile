@@ -27,6 +27,7 @@ RUN apt-get update && apt-get install -y \
     libgbm1 \
     libasound2t64 \
     gnupg \
+    libpcap-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js (for Playwright and Backend if running together, though we mount backend)
@@ -50,6 +51,9 @@ RUN go install -v github.com/projectdiscovery/katana/cmd/katana@latest
 RUN go install -v github.com/projectdiscovery/cdncheck/cmd/cdncheck@latest
 RUN go install -v github.com/lc/gau/v2/cmd/gau@latest
 RUN go install -v github.com/tomnomnom/waybackurls@latest
+
+# Add empty gau config to prevent warnings
+RUN touch /root/.gau.toml
 
 # Install Gitleaks
 RUN cd /tmp && \

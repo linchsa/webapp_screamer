@@ -85,36 +85,46 @@ export default function ProjectView() {
     const fetchProjectData = async () => {
         try {
             const res = await fetch(`${API_URL}/api/projects/${id}`);
+            if (!res.ok) {
+                setProject({ error: "Project not found" });
+                return;
+            }
             const data = await res.json();
             setProject(data);
             setCustomHeader(data.header || '');
 
-            const findRes = await fetch(`${API_URL}/api/projects/${id}/findings`);
-            const findData = await findRes.json();
-            
-            // Process findings to ensure context is object
-            const processed = findData.map(f => {
-                let ctx = f.context;
-                try {
-                    if (typeof ctx === 'string') ctx = JSON.parse(ctx);
-                } catch (e) {}
-                return { ...f, contextObj: ctx };
-            });
-            
-            setFindings(processed);
+            if (findRes.ok) {
+                const findData = await findRes.json();
+                if (Array.isArray(findData)) {
+                    const processed = findData.map(f => {
+                        let ctx = f.context;
+                        try {
+                            if (typeof ctx === 'string') ctx = JSON.parse(ctx);
+                        } catch (e) {}
+                        return { ...f, contextObj: ctx };
+                    });
+                    setFindings(processed);
+                    
+                    // Update stats
+                    const subdomains = new Set(processed.map(f => f.domain)).size;
+                    const ports = processed.filter(f => f.type === 'port').length;
+                    const vulns = processed.filter(f => f.severity === 'critical' || f.severity === 'high').length;
+                    setStats({ subdomains, ports, vulns });
+                }
+            }
 
             // Fetch Insights
             const insightRes = await fetch(`${API_URL}/api/projects/${id}/insights`);
             if (insightRes.ok) {
                 const insightData = await insightRes.json();
-                setInsights(insightData);
+                if (insightData && !insightData.error) {
+                    setInsights({
+                        clusters: Array.isArray(insightData.clusters) ? insightData.clusters : [],
+                        apiInventory: Array.isArray(insightData.apiInventory) ? insightData.apiInventory : [],
+                        anomalies: Array.isArray(insightData.anomalies) ? insightData.anomalies : []
+                    });
+                }
             }
-
-            // Update stats
-            const subdomains = new Set(processed.map(f => f.domain)).size;
-            const ports = processed.filter(f => f.type === 'port').length;
-            const vulns = processed.filter(f => f.severity === 'critical' || f.severity === 'high').length;
-            setStats({ subdomains, ports, vulns });
         } catch (err) {
             console.error("[ERR] Fetching project data:", err);
         }
@@ -228,26 +238,23 @@ export default function ProjectView() {
 
     // Group findings by domain with filter
     const findingsToDisplay = smartGrouping && activeTab === 'results' ? (() => {
-        // Apply cluster filters
-        const groupedMap = new Map();
-        const clusterKeys = insights.clusters.map(c => c.pattern);
+        if (!insights.clusters || !Array.isArray(insights.clusters)) return findings;
         
         const ungrouped = findings.filter(f => {
             if (!f.domain) return true;
-            const isClustered = insights.clusters.some(c => c.members.includes(f.domain));
-            return !isClustered;
+            return !insights.clusters.some(c => c.members?.includes(f.domain));
         });
 
         const clusters = insights.clusters.map(c => ({
             id: `cluster-${c.pattern}`,
             domain: c.pattern,
             type: 'infrastructure_group',
-            value: `${c.members.length} hosts`,
-            severity: c.outlier_vulnerabilities.length > 0 ? 'high' : 'info',
-            context: `Hosts: ${c.members.slice(0, 3).join(', ')}${c.members.length > 3 ? '...' : ''}`,
+            value: `${c.members?.length || 0} hosts`,
+            severity: (c.outlier_vulnerabilities?.length > 0) ? 'high' : 'info',
+            context: `Hosts: ${c.members?.slice(0, 3).join(', ') || ''}${c.members?.length > 3 ? '...' : ''}`,
             cdn_waf: c.common_tech,
             isGroup: true,
-            members: c.members
+            members: c.members || []
         }));
 
         return [...clusters, ...ungrouped];
@@ -279,7 +286,8 @@ export default function ProjectView() {
         return true;
     });
 
-    const groupedFindings = filteredFindings.reduce((acc, finding) => {
+    const groupedFindings = (filteredFindings || []).reduce((acc, finding) => {
+        if (!finding) return acc;
         const d = finding.domain || project?.target || 'Unknown Target';
         if (!acc[d]) acc[d] = [];
         acc[d].push(finding);
@@ -287,6 +295,12 @@ export default function ProjectView() {
     }, {});
 
     if (!project) return <div style={{ padding: '24px' }}>Loading project details...</div>;
+    if (project.error) return (
+        <div style={{ padding: '24px', textAlign: 'center' }}>
+            <h2 style={{ color: 'var(--danger-color)' }}>{project.error}</h2>
+            <button className="glass-btn" onClick={() => navigate('/')}>Back to Dashboard</button>
+        </div>
+    );
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', height: '100%' }}>
@@ -639,7 +653,7 @@ export default function ProjectView() {
                                     </div>
                                     
                                     <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
-                                        {aggr.methods.map(m => (
+                                        {Array.isArray(aggr.methods) && aggr.methods.map(m => (
                                             <span key={m} style={{ fontSize: '0.65rem', padding: '2px 6px', background: m==='GET' ? 'rgba(0,255,157,0.1)' : 'rgba(0,192,255,0.1)', color: m==='GET' ? '#00ff9d' : '#00c0ff', borderRadius: '4px', fontWeight: 'bold' }}>
                                                 {m}
                                             </span>

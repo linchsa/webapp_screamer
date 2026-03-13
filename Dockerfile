@@ -5,6 +5,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Override apt sources to use official Kali mirror via HTTP only (avoids SSL CDN issues in Docker)
 RUN echo "deb http://http.kali.org/kali kali-rolling main contrib non-free non-free-firmware" > /etc/apt/sources.list
+# Disable SSL verification for apt to bypass failing CDN nodes
+RUN echo "Acquire::https::Verify-Peer \"false\";" > /etc/apt/apt.conf.d/99verify-peer.conf
 
 # Update and install base dependencies (no golang from apt - we install Go manually below)
 RUN apt-get update && apt-get install -y --no-install-recommends \

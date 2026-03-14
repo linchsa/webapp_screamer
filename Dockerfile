@@ -97,11 +97,44 @@ RUN cd /tmp && \
     rm gitleaks_8.18.2_linux_x64.tar.gz
 
 # --- SECCIÓN PLAYWRIGHT ---
-# Instalamos las dependencias del sistema y luego el navegador Chromium
-RUN apt-get update && \
-    npx playwright install-deps chromium && \
-    npx playwright install chromium && \
-    rm -rf /var/lib/apt/lists/*
+# Instalamos manualmente las dependencias de sistema de Chromium para evitar
+# que playwright install-deps use mirrors CDN con SSL roto.
+# Luego solo descargamos el binario del navegador (sin tocar apt).
+RUN apt-get update --fix-missing && \
+    apt-get install -y --no-install-recommends --fix-missing \
+        libfreetype6 \
+        fonts-wqy-zenhei \
+        libpixman-1-0 \
+        libxcb-shm0 \
+        libdatrie1 \
+        libsm6 \
+        libunwind8 \
+        x11-xkb-utils \
+        xfonts-utils \
+        xvfb \
+        libglib2.0-0 \
+        libnss3 \
+        libnspr4 \
+        libdbus-1-3 \
+        libatk1.0-0 \
+        libatk-bridge2.0-0 \
+        libcups2 \
+        libdrm2 \
+        libxcomposite1 \
+        libxdamage1 \
+        libxfixes3 \
+        libxrandr2 \
+        libgbm1 \
+        libxkbcommon0 \
+        libasound2t64 \
+        libpango-1.0-0 \
+        libpangocairo-1.0-0 \
+        libcairo2 \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Descarga solo el binario de Chromium (no toca apt)
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN npx playwright@1.47.0 install chromium
 
 # Configuración del directorio de trabajo
 WORKDIR /app

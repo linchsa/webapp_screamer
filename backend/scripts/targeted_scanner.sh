@@ -28,20 +28,24 @@ if has_module "waf"; then
         echo "$DOMAIN" | httpx $HTTPX_ARGS 2>/dev/null > "$PROJECT_DIR/waf_httpx.json" || true
     fi
     echo "[WAF] WAF/CDN detection complete."
+    echo "[SYSTEM] MODULE_COMPLETE: waf"
 fi
 
 # ─── MODULE: PORT SCAN ───────────────────────────────────────────────────────
 if has_module "ports"; then
-    echo "[NMAP] Starting port scan on $DOMAIN..."
-    nmap -sV -T4 --top-ports 1000 -Pn "$DOMAIN" -oJ "$PROJECT_DIR/ports.json" -oN "$PROJECT_DIR/ports.txt" 2>/dev/null || true
+    echo "[NMAP] Starting intensive port scan on $DOMAIN..."
+    # Intensive flags: -sV -sC -Pn -T3 --top-ports 1000 --open --reason
+    nmap -sV -sC -Pn -T3 --top-ports 1000 --open --reason "$DOMAIN" -oJ "$PROJECT_DIR/ports.json" -oN "$PROJECT_DIR/ports.txt" 2>/dev/null || true
     echo "[NMAP] Port scan complete."
+    echo "[SYSTEM] MODULE_COMPLETE: ports"
 fi
 
 # ─── MODULE: JS SECRETS ──────────────────────────────────────────────────────
 if has_module "js_secrets"; then
     echo "[KATANA] Crawling JS files on $DOMAIN..."
     mkdir -p "$PROJECT_DIR/assets"
-    KATANA_ARGS="-silent -jc -jsl -depth 3 -js-crawl"
+    # Intensive flags: -jc -jsl -depth 5 -automatic-form-fill -concurrency 10
+    KATANA_ARGS="-silent -jc -jsl -depth 5 -automatic-form-fill -concurrency 10"
     if [ -n "$HEADER" ]; then
         echo "https://$DOMAIN" | katana $KATANA_ARGS -H "$HEADER" 2>/dev/null \
             | grep -E "\.js$" | sort -u > "$PROJECT_DIR/js_urls.txt" || true
@@ -73,12 +77,13 @@ if has_module "js_secrets"; then
             -j -o "$PROJECT_DIR/nuclei_secrets.json" 2>/dev/null || true
     fi
     echo "[JS SECRETS] Secret scanning complete."
+    echo "[SYSTEM] MODULE_COMPLETE: js_secrets"
 fi
 
 # ─── MODULE: ENDPOINTS ───────────────────────────────────────────────────────
 if has_module "endpoints"; then
     echo "[ENDPOINTS] Crawling $DOMAIN for API endpoints..."
-    KATANA_ARGS="-silent -jc -jsl -depth 4"
+    KATANA_ARGS="-silent -jc -jsl -depth 5 -automatic-form-fill -concurrency 10"
     if [ -n "$HEADER" ]; then
         echo "https://$DOMAIN" | katana $KATANA_ARGS -H "$HEADER" 2>/dev/null \
             > "$PROJECT_DIR/katana_urls.txt" || true
@@ -92,6 +97,7 @@ if has_module "endpoints"; then
     sort -u "$PROJECT_DIR/katana_urls.txt" > "$PROJECT_DIR/endpoints.txt"
     EP_COUNT=$(wc -l < "$PROJECT_DIR/endpoints.txt")
     echo "[ENDPOINTS] Found $EP_COUNT unique endpoints."
+    echo "[SYSTEM] MODULE_COMPLETE: endpoints"
 fi
 
 # ─── MODULE: TECH FINGERPRINT ────────────────────────────────────────────────
@@ -100,11 +106,12 @@ if has_module "tech"; then
     echo "https://$DOMAIN" | nuclei -tags "tech,cms,panel,config" -silent -nc \
         -j -o "$PROJECT_DIR/tech.json" 2>/dev/null || true
     echo "[TECH] Fingerprinting complete."
+    echo "[SYSTEM] MODULE_COMPLETE: tech"
 fi
 
 # ─── MODULE: WPSCAN ──────────────────────────────────────────────────────────
 if has_module "wpscan"; then
-    echo "[WPSCAN] Running WordPress audit on $DOMAIN..."
+    echo "[WPSCAN] WordPress audit on $DOMAIN..."
     WP_ARGS="--url https://$DOMAIN --format json --output $PROJECT_DIR/wpscan.json --no-update -t 10"
     if [ -n "$WPSCAN_KEY" ]; then
         WP_ARGS="$WP_ARGS --api-token $WPSCAN_KEY"
@@ -114,6 +121,7 @@ if has_module "wpscan"; then
     fi
     wpscan $WP_ARGS 2>/dev/null || true
     echo "[WPSCAN] WordPress audit complete."
+    echo "[SYSTEM] MODULE_COMPLETE: wpscan"
 fi
 
 echo "[SYSTEM] All selected modules complete for $DOMAIN."

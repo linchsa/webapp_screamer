@@ -85,13 +85,21 @@ export default function SubdomainDashboard({ projectId, socketRef }) {
             }
         };
 
+        const onResultsUpdated = (data) => {
+            if (data.projectId == projectId && data.domain === selectedDomain) {
+                fetchFindings(selectedDomain);
+            }
+        };
+
         socket.on('targeted-log', onTargetedLog);
         socket.on('targeted-scan-finished', onTargetedFinished);
+        socket.on('domain-results-updated', onResultsUpdated);
         return () => {
             socket.off('targeted-log', onTargetedLog);
             socket.off('targeted-scan-finished', onTargetedFinished);
+            socket.off('domain-results-updated', onResultsUpdated);
         };
-    }, [socketRef, projectId]);
+    }, [socketRef, projectId, selectedDomain]);
 
     // Auto-scroll terminal
     useEffect(() => {
@@ -101,16 +109,20 @@ export default function SubdomainDashboard({ projectId, socketRef }) {
     }, [scanLogs, selectedDomain]);
 
     // Fetch findings when selectedDomain changes
-    useEffect(() => {
-        if (!selectedDomain) return;
+    const fetchFindings = (domain) => {
+        if (!domain) return;
         setLoading(true);
-        fetch(`${API_URL}/api/projects/${projectId}/domain-scan/${encodeURIComponent(selectedDomain)}`)
+        fetch(`${API_URL}/api/projects/${projectId}/domain-scan/${encodeURIComponent(domain)}`)
             .then(r => r.json())
             .then(data => {
                 setFindings(Array.isArray(data) ? data : []);
                 setLoading(false);
             })
             .catch(() => setLoading(false));
+    };
+
+    useEffect(() => {
+        fetchFindings(selectedDomain);
     }, [projectId, selectedDomain]);
 
     const filteredSubdomains = subdomains.filter(s => s.domain.toLowerCase().includes(searchTerm.toLowerCase()));

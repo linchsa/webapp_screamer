@@ -6,6 +6,7 @@ const { Pool } = require('pg');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const xml2js = require('xml2js');
 
 const app = express();
 app.use(cors());
@@ -65,6 +66,13 @@ async function initDb() {
             hash TEXT NOT NULL,
             last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(project_id, file_path)
+        )`);
+        await dbRepo.query(`CREATE TABLE IF NOT EXISTS scan_logs (
+            id SERIAL PRIMARY KEY,
+            project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+            domain TEXT,
+            log_line TEXT,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )`);
         // Ensure default settings exist
         await dbRepo.query(`INSERT INTO settings (id, theme, scan_profile, rate_limit, wpscan_key) 
@@ -585,45 +593,57 @@ io.on('connection', (socket) => {
         const proc = spawn('bash', ['./scripts/targeted_scanner.sh', domain, header || '', projectDir, modulesCsv, wpscanKey || ''],
             { cwd: path.join(__dirname) });
 
-        activeScans.set(scanKey, { projectId, domain, scannerProcess: proc, startTime: Date.now(), type: 'targeted', projectDir, logBuffer: [] });
+        activeScans.set(scanKey, { projectId, domain, scannerProcess: proc, startTime: Date.now(), type: 'targeted', projectDir, logBuffer: [], stdoutBuffer: '', stderrBuffer: '' });
 
-        const appendTargetLog = (rawChunk) => {
+        const processLine = (trimmed) => {
             const scan = activeScans.get(scanKey);
             if (!scan) return;
+            if (!trimmed) return;
 
-            const lines = rawChunk.split('\n');
-            for (const line of lines) {
-                const trimmed = line.trim();
-                if (!trimmed) continue;
+            scan.logBuffer.push(trimmed);
+            if (scan.logBuffer.length > 100) scan.logBuffer.shift();
 
-                scan.logBuffer.push(trimmed);
-                if (scan.logBuffer.length > 100) scan.logBuffer.shift();
+            // Save to database for persistence
+            dbRepo.query('INSERT INTO scan_logs (project_id, domain, log_line) VALUES ($1, $2, $3)', [projectId, domain, trimmed]).catch(() => {});
 
-                // 1. Detect Nuclei JSON findings for real-time secrets
-                if (trimmed.startsWith('{') && trimmed.includes('"template-id"')) {
-                    try {
-                        const result = JSON.parse(trimmed);
-                        saveFinding(projectId, domain, 'js_secret', result['matched-at'] || result.host || '', {
-                            template: result['template-id'] || '', name: result.info?.name || '',
-                            url: result['matched-at'] || '', matcher: result['matcher-name'] || ''
-                        }, result.info?.severity || 'medium').then(() => {
-                            io.emit('domain-results-updated', { projectId, domain, module: 'js_secrets' });
-                        });
-                    } catch(e) {}
-                }
-
-                // 2. Detect Module Completion
-                const moduleMatch = trimmed.match(/\[SYSTEM\] MODULE_COMPLETE: (\w+)/);
-                if (moduleMatch) {
-                    const module = moduleMatch[1];
-                    parseModuleResults(module, projectId, domain, projectDir).catch(console.error);
-                }
+            // 1. Detect Nuclei JSON findings for real-time secrets
+            if (trimmed.startsWith('{') && trimmed.includes('"template-id"')) {
+                try {
+                    const result = JSON.parse(trimmed);
+                    saveFinding(projectId, domain, 'js_secret', result['matched-at'] || result.host || '', {
+                        template: result['template-id'] || '', name: result.info?.name || '',
+                        url: result['matched-at'] || '', matcher: result['matcher-name'] || ''
+                    }, result.info?.severity || 'medium').then(() => {
+                        io.emit('domain-results-updated', { projectId, domain, module: 'js_secrets' });
+                    });
+                } catch(e) {}
             }
-            io.emit('targeted-log', { projectId, domain, log: rawChunk });
+
+            // 2. Detect Module Completion
+            const moduleMatch = trimmed.match(/\[SYSTEM\] MODULE_COMPLETE: (\w+)/);
+            if (moduleMatch) {
+                const module = moduleMatch[1];
+                parseModuleResults(module, projectId, domain, projectDir).catch(console.error);
+            }
+            io.emit('targeted-log', { projectId, domain, log: trimmed });
         };
 
-        proc.stdout.on('data', chunk => appendTargetLog(chunk.toString()));
-        proc.stderr.on('data', chunk => appendTargetLog(`[ERR] ${chunk.toString()}`));
+        const appendTargetLog = (rawChunk, isError) => {
+            const scan = activeScans.get(scanKey);
+            if (!scan) return;
+            
+            const bufferKey = isError ? 'stderrBuffer' : 'stdoutBuffer';
+            scan[bufferKey] += rawChunk;
+            const lines = scan[bufferKey].split(/\r?\n/);
+            scan[bufferKey] = lines.pop(); // Keep the potentially partial line
+
+            for (const line of lines) {
+                processLine(line.trim());
+            }
+        };
+
+        proc.stdout.on('data', chunk => appendTargetLog(chunk.toString(), false));
+        proc.stderr.on('data', chunk => appendTargetLog(chunk.toString(), true));
 
         proc.on('close', async (code) => {
             activeScans.delete(scanKey);
@@ -775,6 +795,19 @@ app.get('/api/projects/:id/scanned-targets', async (req, res) => {
         });
 
         res.json(rows);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/projects/:id/domain-logs/:domain', async (req, res) => {
+    try {
+        const { id, domain } = req.params;
+        const result = await dbRepo.query(
+            'SELECT log_line, timestamp FROM scan_logs WHERE project_id = $1 AND domain = $2 ORDER BY timestamp ASC',
+            [id, domain]
+        );
+        res.json(result.rows.map(r => r.log_line));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -955,25 +988,33 @@ async function parseModuleResults(module, projectId, domain, projectDir) {
                 break;
             }
             case 'ports': {
-                const portsJsonFile = path.join(projectDir, 'ports.json');
+                const portsXmlFile = path.join(projectDir, 'ports.xml');
                 const portsTxtFile  = path.join(projectDir, 'ports.txt');
-                if (fs.existsSync(portsJsonFile)) {
-                    const nmapJson = safeJson(portsJsonFile);
-                    const hosts = nmapJson?.nmaprun?.host;
-                    const hostArr = Array.isArray(hosts) ? hosts : (hosts ? [hosts] : []);
-                    for (const h of hostArr) {
-                        const ports = h?.ports?.port;
-                        const portArr = Array.isArray(ports) ? ports : (ports ? [ports] : []);
-                        for (const p of portArr) {
-                            if (p?.state?.['@state'] === 'open') {
-                                await saveFinding(projectId, domain, 'port', `${p['@portid']}/${p['@protocol']}`, {
-                                    service: p.service?.['@name'] || '',
-                                    version: `${p.service?.['@product'] || ''} ${p.service?.['@version'] || ''}`.trim(),
-                                    reason: p.state?.['@reason'] || '',
-                                    state: 'open'
-                                }, 'low');
+                
+                if (fs.existsSync(portsXmlFile)) {
+                    const xml = fs.readFileSync(portsXmlFile, 'utf8');
+                    const parser = new xml2js.Parser();
+                    try {
+                        const result = await parser.parseStringPromise(xml);
+                        const hostArr = Array.isArray(result?.nmaprun?.host) ? result.nmaprun.host : (result?.nmaprun?.host ? [result.nmaprun.host] : []);
+                        
+                        for (const h of hostArr) {
+                            const ports = h?.ports?.[0]?.port;
+                            const portArr = Array.isArray(ports) ? ports : (ports ? [ports] : []);
+                            for (const p of portArr) {
+                                if (p.state?.[0]?.$?.state === 'open') {
+                                    const service = p.service?.[0]?.$ || {};
+                                    await saveFinding(projectId, domain, 'port', `${p.$?.portid}/${p.$?.protocol}`, {
+                                        service: service.name || '',
+                                        version: `${service.product || ''} ${service.version || ''}`.trim(),
+                                        reason: p.state?.[0]?.$?.reason || '',
+                                        state: 'open'
+                                    }, 'low');
+                                }
                             }
                         }
+                    } catch (err) {
+                        console.error("[ERR] Nmap XML Parse Error:", err);
                     }
                 } else if (fs.existsSync(portsTxtFile)) {
                     const txt = fs.readFileSync(portsTxtFile, 'utf8');

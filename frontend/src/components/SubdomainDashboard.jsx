@@ -123,6 +123,19 @@ export default function SubdomainDashboard({ projectId, socketRef }) {
 
     useEffect(() => {
         fetchFindings(selectedDomain);
+        
+        // Fetch historical logs when a domain is selected
+        if (selectedDomain) {
+            fetch(`${API_URL}/api/projects/${projectId}/domain-logs/${encodeURIComponent(selectedDomain)}`)
+                .then(r => r.json())
+                .then(history => {
+                    setScanLogs(prev => ({
+                        ...prev,
+                        [selectedDomain]: Array.isArray(history) ? history : []
+                    }));
+                })
+                .catch(console.error);
+        }
     }, [projectId, selectedDomain]);
 
     const filteredSubdomains = subdomains.filter(s => s.domain.toLowerCase().includes(searchTerm.toLowerCase()));

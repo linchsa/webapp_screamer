@@ -35,7 +35,8 @@ fi
 if has_module "ports"; then
     echo "[NMAP] Starting intensive port scan on $DOMAIN..."
     # Intensive flags: -sV -sC -Pn -T3 --top-ports 1000 --open --reason
-    nmap -sV -sC -Pn -T3 --top-ports 1000 --open --reason "$DOMAIN" -oJ "$PROJECT_DIR/ports.json" -oN "$PROJECT_DIR/ports.txt" || echo "[ERR] Nmap execution failed or returned error."
+    # -oX: XML for backend parsing, -oN: Normal output for persistent terminal logs
+    nmap -sV -sC -Pn -T3 --top-ports 1000 --open --reason "$DOMAIN" -oX "$PROJECT_DIR/ports.xml" -oN "$PROJECT_DIR/ports.txt" || echo "[ERR] Nmap execution failed or returned error."
     echo "[NMAP] Port scan complete."
     echo "[SYSTEM] MODULE_COMPLETE: ports"
 fi

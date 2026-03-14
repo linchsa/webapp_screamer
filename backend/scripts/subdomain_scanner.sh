@@ -31,9 +31,9 @@ echo "[HTTPX] Probing live hosts (this may take a while)..."
 HTTPX_ARGS="-silent -sc -title -ip -tech-detect -follow-redirects -location -json"
 
 if [ -n "$HEADER" ]; then
-    cat "$PROJECT_DIR/subdomains_raw.txt" | httpx $HTTPX_ARGS -H "$HEADER" -o "$PROJECT_DIR/httpx_subdomains.jsonl" 2>/dev/null
+    cat "$PROJECT_DIR/subdomains_raw.txt" | httpx $HTTPX_ARGS -H "$HEADER" -o "$PROJECT_DIR/httpx_subdomains.jsonl" > /dev/null 2>&1
 else
-    cat "$PROJECT_DIR/subdomains_raw.txt" | httpx $HTTPX_ARGS -o "$PROJECT_DIR/httpx_subdomains.jsonl" 2>/dev/null
+    cat "$PROJECT_DIR/subdomains_raw.txt" | httpx $HTTPX_ARGS -o "$PROJECT_DIR/httpx_subdomains.jsonl" > /dev/null 2>&1
 fi
 
 ALIVE_COUNT=$(wc -l < "$PROJECT_DIR/httpx_subdomains.jsonl")

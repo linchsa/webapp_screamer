@@ -560,6 +560,181 @@ io.on('connection', (socket) => {
         });
     });
 
+    // ─── Targeted Per-Subdomain Scan ─────────────────────────────────────────
+    socket.on('start-targeted-scan', async (data) => {
+        const { projectId, domain, header, modules, wpscanKey } = data;
+        const scanKey = `targeted-${projectId}-${domain}`;
+
+        if (activeScans.has(scanKey)) {
+            socket.emit('targeted-log', { projectId, domain, log: '[SYSTEM] A scan is already running for this target.' });
+            return;
+        }
+
+        const projectDir = path.join(__dirname, '..', 'app_data', 'projects',
+            `targeted-${domain.replace(/[^a-zA-Z0-9.-]/g,'_')}-${Date.now()}`);
+        fs.mkdirSync(projectDir, { recursive: true });
+
+        const modulesCsv = (Array.isArray(modules) ? modules : []).join(',');
+        io.emit('targeted-log', { projectId, domain, log: `[SYSTEM] Starting targeted scan on ${domain} | Modules: ${modulesCsv}` });
+
+        const proc = spawn('bash', ['./scripts/targeted_scanner.sh', domain, header || '', projectDir, modulesCsv, wpscanKey || ''],
+            { cwd: path.join(__dirname) });
+
+        activeScans.set(scanKey, { projectId, domain, scannerProcess: proc, startTime: Date.now(), type: 'targeted', projectDir });
+
+        proc.stdout.on('data', chunk => io.emit('targeted-log', { projectId, domain, log: chunk.toString().trim() }));
+        proc.stderr.on('data', chunk => io.emit('targeted-log', { projectId, domain, log: `[ERR] ${chunk.toString().trim()}` }));
+
+        proc.on('close', async (code) => {
+            activeScans.delete(scanKey);
+            io.emit('targeted-log', { projectId, domain, log: `[SYSTEM] Script exited (code ${code}). Parsing results...` });
+
+            // ── Helpers ────────────────────────────────────────────────────────
+            const safeJson = (file) => {
+                try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch(e) { return null; }
+            };
+            const safeJsonLines = (file) => {
+                try {
+                    return fs.readFileSync(file, 'utf8').split('\n').filter(l => l.trim()).map(l => { try { return JSON.parse(l); } catch(e){ return null; } }).filter(Boolean);
+                } catch(e) { return []; }
+            };
+            const saveFinding = (type, value, ctx, severity, cdnWaf) =>
+                dbRepo.query(`INSERT INTO findings (project_id, domain, type, value, context, severity, cdn_waf)
+                              VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING`,
+                    [projectId, domain, type, value, JSON.stringify(ctx), severity || 'info', cdnWaf || null]).catch(() => {});
+
+            // ── WAF / CDN ─────────────────────────────────────────────────────
+            const wafHttpxFile = path.join(projectDir, 'waf_httpx.json');
+            if (fs.existsSync(wafHttpxFile)) {
+                const lines = safeJsonLines(wafHttpxFile);
+                for (const r of lines) {
+                    const techList = Array.isArray(r.technologies) ? r.technologies : [];
+                    const cdnWaf = techList.find(t => /cloudflare|akamai|cloudfront|fastly|incapsula|sucuri|imperva/i.test(t)) || null;
+                    await saveFinding('waf', cdnWaf || 'No WAF/CDN detected', {
+                        server: r.server || '', tech: techList.join(', '),
+                        status: r.status_code, via: r.via || ''
+                    }, 'info', cdnWaf);
+                }
+            }
+
+            // ── Ports (nmap JSON output) ──────────────────────────────────────
+            const portsJsonFile = path.join(projectDir, 'ports.json');
+            const portsTxtFile  = path.join(projectDir, 'ports.txt');
+            if (fs.existsSync(portsJsonFile)) {
+                try {
+                    const nmapJson = safeJson(portsJsonFile);
+                    const hosts = nmapJson?.nmaprun?.host;
+                    const hostArr = Array.isArray(hosts) ? hosts : (hosts ? [hosts] : []);
+                    for (const h of hostArr) {
+                        const ports = h?.ports?.port;
+                        const portArr = Array.isArray(ports) ? ports : (ports ? [ports] : []);
+                        for (const p of portArr) {
+                            if (p?.state?.['@state'] === 'open') {
+                                await saveFinding('port', `${p['@portid']}/${p['@protocol']}`, {
+                                    service: p.service?.['@name'] || '',
+                                    version: `${p.service?.['@product'] || ''} ${p.service?.['@version'] || ''}`.trim(),
+                                    state: 'open'
+                                }, 'low');
+                            }
+                        }
+                    }
+                } catch(e) {
+                    // Fallback: parse text output
+                    if (fs.existsSync(portsTxtFile)) {
+                        const txt = fs.readFileSync(portsTxtFile, 'utf8');
+                        const portLines = txt.split('\n').filter(l => /\d+\/tcp.*open/.test(l));
+                        for (const line of portLines) {
+                            const m = line.match(/(\d+)\/(\w+)\s+open\s+(\S+)?\s*(.*)?/);
+                            if (m) await saveFinding('port', `${m[1]}/${m[2]}`, {
+                                service: m[3] || '', version: (m[4] || '').trim(), state: 'open'
+                            }, 'low');
+                        }
+                    }
+                }
+            }
+
+            // ── JS Secrets (gitleaks) ─────────────────────────────────────────
+            const secretsFile = path.join(projectDir, 'secrets.json');
+            if (fs.existsSync(secretsFile)) {
+                const secrets = safeJson(secretsFile);
+                if (Array.isArray(secrets)) {
+                    for (const s of secrets) {
+                        await saveFinding('js_secret', s.Match || s.Secret || '(redacted)', {
+                            rule: s.RuleID || s.Description || '',
+                            file: s.File || '', line: s.StartLine || 0,
+                            author: s.Author || ''
+                        }, 'critical');
+                    }
+                }
+            }
+            // Nuclei secrets
+            const nucleiSecretsFile = path.join(projectDir, 'nuclei_secrets.json');
+            if (fs.existsSync(nucleiSecretsFile)) {
+                const results = safeJsonLines(nucleiSecretsFile);
+                for (const r of results) {
+                    await saveFinding('js_secret', r['matched-at'] || r.host || '', {
+                        template: r['template-id'] || '', name: r.info?.name || '',
+                        url: r['matched-at'] || ''
+                    }, r.info?.severity || 'medium');
+                }
+            }
+
+            // ── Endpoints ────────────────────────────────────────────────────
+            const endpointsFile = path.join(projectDir, 'endpoints.txt');
+            if (fs.existsSync(endpointsFile)) {
+                const lines = fs.readFileSync(endpointsFile, 'utf8').split('\n').filter(l => l.trim());
+                for (const url of lines.slice(0, 2000)) { // cap at 2k
+                    const isInteresting = /api|graphql|auth|login|token|upload|admin|v1|v2|v3/.test(url);
+                    await saveFinding('endpoint', url, { source: 'crawl' }, isInteresting ? 'medium' : 'info');
+                }
+            }
+
+            // ── Tech Fingerprint (nuclei) ────────────────────────────────────
+            const techFile = path.join(projectDir, 'tech.json');
+            if (fs.existsSync(techFile)) {
+                const results = safeJsonLines(techFile);
+                for (const r of results) {
+                    await saveFinding('tech', r['template-id'] || r.host || '', {
+                        name: r.info?.name || '', url: r['matched-at'] || '',
+                        severity: r.info?.severity || 'info'
+                    }, r.info?.severity || 'info');
+                }
+            }
+
+            // ── WPScan ──────────────────────────────────────────────────────
+            const wpscanFile = path.join(projectDir, 'wpscan.json');
+            if (fs.existsSync(wpscanFile)) {
+                const wp = safeJson(wpscanFile);
+                if (wp) {
+                    const vulns = wp.vulnerabilities || [];
+                    for (const v of vulns) {
+                        await saveFinding('wpscan_vuln', v.title || v.to_s || 'WP Vulnerability', {
+                            references: v.references?.url?.slice(0, 3) || [],
+                            fixed_in: v.fixed_in || '', cvss: v.cvss || null
+                        }, 'high');
+                    }
+                    // Also save plugin/theme vulns
+                    const plugins = wp.plugins || {};
+                    for (const [name, info] of Object.entries(plugins)) {
+                        const pv = info.vulnerabilities || [];
+                        for (const v of pv) {
+                            await saveFinding('wpscan_vuln', `[Plugin: ${name}] ${v.title || ''}`, {
+                                plugin: name, version: info.version?.number || '?',
+                                fixed_in: v.fixed_in || ''
+                            }, 'high');
+                        }
+                    }
+                }
+            }
+
+            const savedTotal = await dbRepo.query(
+                `SELECT COUNT(*) as c FROM findings WHERE project_id=$1 AND domain=$2`,
+                [projectId, domain]);
+            io.emit('targeted-log', { projectId, domain, log: `[SYSTEM] Done. ${savedTotal.rows[0]?.c || 0} findings saved.` });
+            io.emit('targeted-scan-finished', { projectId, domain });
+        });
+    });
+
     socket.on('stop-scan', (stopData) => {
         const { projectId } = stopData;
         // Stop all scans related to this project (Full, IP, Individual)
@@ -577,6 +752,29 @@ io.on('connection', (socket) => {
     socket.on('disconnect', () => {
         console.log('Client disconnected:', socket.id);
     });
+});
+
+// ─── Domain-specific targeted results ────────────────────────────────────────
+app.get('/api/projects/:id/domain-scan/:domain', async (req, res) => {
+    try {
+        const { id, domain } = req.params;
+        const result = await dbRepo.query(
+            `SELECT id, domain, type, value, context, severity, cdn_waf, timestamp
+             FROM findings
+             WHERE project_id = $1 AND domain = $2
+               AND type IN ('waf','port','js_secret','endpoint','tech','wpscan_vuln')
+             ORDER BY type, timestamp DESC`,
+            [id, decodeURIComponent(domain)]
+        );
+        const rows = result.rows.map(r => {
+            let ctx = r.context;
+            try { if (typeof ctx === 'string') ctx = JSON.parse(ctx); } catch(e) {}
+            return { ...r, context: ctx };
+        });
+        res.json(rows);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // Basic API endpoints

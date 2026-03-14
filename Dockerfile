@@ -23,12 +23,11 @@ RUN apt-get update --fix-missing && apt-get install -y --no-install-recommends \
     postgresql postgresql-contrib libpq-dev \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# --- 3. GO (Versión 1.24.0 para asegurar compatibilidad con PD Tools) ---
-# Se descarga directamente de la fuente oficial para evitar versiones obsoletas de repositorios
-RUN cd /tmp && \
-    wget -q https://go.dev/dl/go1.24.0.linux-amd64.tar.gz && \
-    tar -C /usr/local -xzf go1.24.0.linux-amd64.tar.gz && \
-    rm go1.24.0.linux-amd64.tar.gz
+# Instalación de Go 1.25.7 (Versión requerida por las últimas herramientas de ProjectDiscovery)
+RUN cd /tmp \
+    && wget -q https://go.dev/dl/go1.25.7.linux-amd64.tar.gz \
+    && tar -C /usr/local -xzf go1.25.7.linux-amd64.tar.gz \
+    && rm go1.25.7.linux-amd64.tar.gz
 
 # Configuración crítica de variables de entorno para Go
 ENV GOPATH=/root/go

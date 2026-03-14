@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Globe, Play, Square, Terminal, Download, RefreshCw, ChevronUp, ChevronDown, Target, Shield, Radio, Key, Link2, Cpu } from 'lucide-react';
+import { Globe, Play, Square, Terminal, Download, RefreshCw, ChevronUp, ChevronDown, Target, Shield, Radio, Key, Link2, Cpu, Database } from 'lucide-react';
 import TargetScanModal from './TargetScanModal';
 
 const API_URL = 'http://localhost:3000';

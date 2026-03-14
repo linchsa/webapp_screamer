@@ -253,9 +253,9 @@ export default function ProjectView() {
             id: `cluster-${c.pattern}`,
             domain: c.pattern,
             type: 'infrastructure_group',
-            value: `${c.members?.length || 0} hosts`,
+            value: `${(c.members || []).length} hosts`,
             severity: (c.outlier_vulnerabilities?.length > 0) ? 'high' : 'info',
-            context: `Hosts: ${c.members?.slice(0, 3).join(', ') || ''}${c.members?.length > 3 ? '...' : ''}`,
+            context: `Hosts: ${(c.members || []).slice(0, 3).join(', ')}${(c.members || []).length > 3 ? '...' : ''}`,
             cdn_waf: c.common_tech,
             isGroup: true,
             members: c.members || []
@@ -276,7 +276,7 @@ export default function ProjectView() {
 
         // Quick Filters
         if (quickFilters.only200) {
-            if (!f.context?.includes('"status":200')) return false;
+            if (!String(f.context || '').includes('"status":200')) return false;
         }
         if (quickFilters.onlySecrets) {
             if (f.type !== 'secret') return false;

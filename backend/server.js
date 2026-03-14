@@ -448,6 +448,118 @@ io.on('connection', (socket) => {
         });
     });
 
+    // ─── Subdomain Discovery Scan ─────────────────────────────────────────
+    socket.on('start-subdomain-scan', async (data) => {
+        const { projectId, target, header } = data;
+        const scanKey = `subdomain-${projectId}`;
+
+        if (activeScans.has(scanKey)) {
+            socket.emit('subdomain-log', { projectId, log: '[SYSTEM] Subdomain scan already running.' });
+            return;
+        }
+
+        // Get project dir (or create a new timestamped one)
+        const projectDir = path.join(__dirname, '..', 'app_data', 'projects', `subdomain-${target.replace('*', 'all').replace(/[^a-zA-Z0-9.-]/g, '_')}-${Date.now()}`);
+        if (!fs.existsSync(projectDir)) fs.mkdirSync(projectDir, { recursive: true });
+
+        io.emit('subdomain-log', { projectId, log: `[SYSTEM] Starting subdomain discovery for ${target}...` });
+
+        const scannerProcess = spawn('bash', ['./scripts/subdomain_scanner.sh', target, header || '', projectDir], {
+            cwd: path.join(__dirname)
+        });
+
+        activeScans.set(scanKey, { projectId, target, scannerProcess, startTime: Date.now(), type: 'subdomain', projectDir });
+
+        scannerProcess.stdout.on('data', (chunk) => {
+            io.emit('subdomain-log', { projectId, log: chunk.toString().trim() });
+        });
+        scannerProcess.stderr.on('data', (chunk) => {
+            io.emit('subdomain-log', { projectId, log: `[ERR] ${chunk.toString().trim()}` });
+        });
+
+        scannerProcess.on('close', async (code) => {
+            activeScans.delete(scanKey);
+            io.emit('subdomain-log', { projectId, log: `[SYSTEM] Script exited (code ${code}). Processing results...` });
+
+            // ── Parse httpx JSONL output ──────────────────────────────────────
+            const jsonlFile = path.join(projectDir, 'httpx_subdomains.jsonl');
+            const mainProbeFile = path.join(projectDir, 'main_domain_probe.json');
+
+            if (!fs.existsSync(jsonlFile)) {
+                io.emit('subdomain-log', { projectId, log: '[SYSTEM] No httpx results file found.' });
+                io.emit('subdomain-scan-finished', { projectId });
+                return;
+            }
+
+            // Get main domain title baseline
+            let mainTitle = '';
+            if (fs.existsSync(mainProbeFile)) {
+                try {
+                    const probe = JSON.parse(fs.readFileSync(mainProbeFile, 'utf8'));
+                    mainTitle = (probe.title || '').toLowerCase().trim();
+                } catch(e) {}
+            }
+
+            // Parse each httpx result line
+            const lines = fs.readFileSync(jsonlFile, 'utf8')
+                .split('\n')
+                .filter(l => l.trim());
+
+            let savedCount = 0;
+            for (const line of lines) {
+                try {
+                    const r = JSON.parse(line);
+                    const subdomain = r.input || r.url || '';
+                    const statusCode = r.status_code || 0;
+                    const title = r.title || '';
+                    const ip = Array.isArray(r.host) ? r.host[0] : (r.host || r.ip || '');
+                    const tech = Array.isArray(r.technologies) ? r.technologies.join(', ') : '';
+                    const cdnWaf = Array.isArray(r.technologies) ? (r.technologies.find(t => /cloudflare|akamai|cloudfront|fastly|incapsula|sucuri|imperva/i.test(t)) || null) : null;
+                    const finalUrl = r.url || '';
+                    const location = r.location || '';
+
+                    // Detect redirect: final URL host differs from input
+                    let redirectType = null;
+                    try {
+                        const inputHost = new URL(subdomain.startsWith('http') ? subdomain : `https://${subdomain}`).hostname;
+                        const finalHost = new URL(finalUrl.startsWith('http') ? finalUrl : `https://${finalUrl}`).hostname;
+                        if (finalHost !== inputHost) redirectType = 'redirect';
+                    } catch(e) {}
+
+                    // Detect soft-redirect: 200 OK but title matches main domain
+                    const titleLower = title.toLowerCase().trim();
+                    const isSoftRedirect = statusCode === 200 && mainTitle && titleLower === mainTitle && subdomain !== target.replace('*.', '');
+                    if (isSoftRedirect) redirectType = 'soft_redirect';
+
+                    const context = JSON.stringify({
+                        status_code: statusCode,
+                        title,
+                        ip,
+                        tech,
+                        final_url: finalUrl,
+                        location,
+                        redirect_type: redirectType
+                    });
+
+                    const severity = isSoftRedirect ? 'info' : (statusCode >= 200 && statusCode < 300 ? 'info' : 'info');
+
+                    await dbRepo.query(
+                        `INSERT INTO findings (project_id, domain, type, value, context, severity, cdn_waf)
+                         VALUES ($1, $2, $3, $4, $5, $6, $7)
+                         ON CONFLICT DO NOTHING`,
+                        [projectId, subdomain, 'subdomain_result', finalUrl, context, severity, cdnWaf]
+                    );
+                    savedCount++;
+                } catch(e) {
+                    // skip malformed lines
+                }
+            }
+
+            io.emit('subdomain-log', { projectId, log: `[SYSTEM] Saved ${savedCount} live subdomains to database.` });
+            io.emit('subdomain-scan-finished', { projectId });
+        });
+    });
+
     socket.on('stop-scan', (stopData) => {
         const { projectId } = stopData;
         // Stop all scans related to this project (Full, IP, Individual)
@@ -505,6 +617,31 @@ app.delete('/api/projects/:id', async (req, res) => {
     try {
         const result = await dbRepo.query('DELETE FROM projects WHERE id = $1', [req.params.id]);
         res.json({ success: true, changes: result.rowCount });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ─── Subdomain Scan Socket Event ────────────────────────────────────────────
+// NOTE: registered inside io.on('connection') below, but we need access to
+// the socket object, so we add it inside the existing connection handler.
+// The REST endpoint is registered here at module level.
+
+app.get('/api/projects/:id/subdomains', async (req, res) => {
+    try {
+        const result = await dbRepo.query(
+            `SELECT id, domain, type, value, context, severity, cdn_waf, timestamp
+             FROM findings
+             WHERE project_id = $1 AND type = 'subdomain_result'
+             ORDER BY timestamp DESC`,
+            [req.params.id]
+        );
+        const rows = result.rows.map(r => {
+            let ctx = r.context;
+            try { if (typeof ctx === 'string') ctx = JSON.parse(ctx); } catch(e) {}
+            return { ...r, context: ctx };
+        });
+        res.json(rows);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }

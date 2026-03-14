@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Play, Square, Terminal, Network, ShieldAlert, Cpu, Download, Trash2, List, TableProperties, Eye, X, Database, Flame, Camera } from 'lucide-react';
+import { ArrowLeft, Play, Square, Terminal, Network, ShieldAlert, Cpu, Download, Trash2, List, TableProperties, Eye, X, Database, Flame, Camera, Globe } from 'lucide-react';
 import io from 'socket.io-client';
+import SubdomainSection from './SubdomainSection';
 
 const API_URL = 'http://localhost:3000';
 
@@ -14,7 +15,7 @@ export default function ProjectView() {
     const [scanActive, setScanActive] = useState(false);
     const [logs, setLogs] = useState(['Connecting to backend...']);
     const [findings, setFindings] = useState([]);
-    const [activeTab, setActiveTab] = useState('logs'); // 'logs', 'results', 'api' or 'map'
+    const [activeTab, setActiveTab] = useState('subdomains'); // 'subdomains', 'logs', 'results', 'api', 'map'
     
     // Stats for insights
     const [stats, setStats] = useState({ subdomains: 0, ports: 0, vulns: 0 });
@@ -339,49 +340,46 @@ export default function ProjectView() {
             {/* Tabs & Search & Quick Filters */}
             <div style={{ display: 'flex', gap: '24px', alignItems: 'flex-start', flexWrap: 'wrap' }}>
                 <div className="glass-panel" style={{ display: 'flex', padding: '8px', gap: '8px', width: 'fit-content' }}>
-                    <button 
-                        className={`glass-btn ${activeTab === 'logs' ? 'primary' : ''}`} 
-                        onClick={() => setActiveTab('logs')}
-                        style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 16px', background: activeTab === 'logs' ? 'var(--accent-color)' : 'transparent', color: activeTab === 'logs' ? '#000' : 'var(--text-main)' }}
-                    >
-                        <List size={18} /> Live Logs
-                    </button>
-                    <button 
-                        className={`glass-btn ${activeTab === 'results' ? 'primary' : ''}`} 
-                        onClick={() => setActiveTab('results')}
-                        style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 16px', background: activeTab === 'results' ? 'var(--accent-color)' : 'transparent', color: activeTab === 'results' ? '#000' : 'var(--text-main)' }}
-                    >
-                        <TableProperties size={18} /> Discovery Results
-                    </button>
-                    <button 
-                        className={`glass-btn ${activeTab === 'api' ? 'primary' : ''}`} 
-                        onClick={() => setActiveTab('api')}
-                        style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 16px', background: activeTab === 'api' ? 'var(--accent-color)' : 'transparent', color: activeTab === 'api' ? '#000' : 'var(--text-main)' }}
-                    >
-                        <Cpu size={18} /> API Inventory
-                    </button>
-                    <button 
-                        className={`glass-btn ${activeTab === 'map' ? 'primary' : ''}`} 
-                        onClick={() => setActiveTab('map')}
-                        style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 16px', background: activeTab === 'map' ? 'var(--accent-color)' : 'transparent', color: activeTab === 'map' ? '#000' : 'var(--text-main)' }}
-                    >
-                        <Network size={18} /> Target Map
-                    </button>
-                </div>
-
-                <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-                    {insights.anomalies?.map(a => (
-                        <div key={a.tech} className="glass-panel" style={{ 
-                            padding: '6px 14px', borderRadius: '100px', fontSize: '0.7rem', fontWeight: 'bold',
-                            background: 'rgba(255, 209, 26, 0.1)', border: '1px solid #ffd11a', color: '#ffd11a',
-                            display: 'flex', alignItems: 'center', gap: '6px', animation: 'blink 2s infinite'
-                        }}>
-                            <ShieldAlert size={14} /> RARE TECH: {a.tech.toUpperCase()} ({a.rarity})
-                        </div>
+                    {[  
+                        { key: 'subdomains', icon: <Globe size={16} />,          label: 'Subdomains' },
+                        { key: 'logs',       icon: <List size={16} />,            label: 'Live Logs' },
+                        { key: 'results',    icon: <TableProperties size={16} />, label: 'Discovery Results' },
+                        { key: 'api',        icon: <Cpu size={16} />,             label: 'API Inventory' },
+                        { key: 'map',        icon: <Network size={16} />,         label: 'Target Map' },
+                    ].map(tab => (
+                        <button
+                            key={tab.key}
+                            className="glass-btn"
+                            onClick={() => setActiveTab(tab.key)}
+                            style={{
+                                display: 'flex', alignItems: 'center', gap: '8px',
+                                padding: '8px 16px',
+                                background: activeTab === tab.key ? 'var(--accent-color)' : 'transparent',
+                                color:      activeTab === tab.key ? '#000' : 'var(--text-main)',
+                                fontWeight: activeTab === tab.key ? 700 : 400,
+                                transition: 'all 0.15s'
+                            }}
+                        >
+                            {tab.icon} {tab.label}
+                        </button>
                     ))}
                 </div>
 
-                {activeTab === 'results' && (
+                {activeTab !== 'subdomains' && (
+                    <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+                        {insights.anomalies?.map(a => (
+                            <div key={a.tech} className="glass-panel" style={{ 
+                                padding: '6px 14px', borderRadius: '100px', fontSize: '0.7rem', fontWeight: 'bold',
+                                background: 'rgba(255, 209, 26, 0.1)', border: '1px solid #ffd11a', color: '#ffd11a',
+                                display: 'flex', alignItems: 'center', gap: '6px', animation: 'blink 2s infinite'
+                            }}>
+                                <ShieldAlert size={14} /> RARE TECH: {a.tech.toUpperCase()} ({a.rarity})
+                            </div>
+                        ))}
+                    </div>
+                )}
+
+                {activeTab !== 'subdomains' && activeTab === 'results' && (
                     <>
                         <div className="glass-panel" style={{ display: 'flex', padding: '8px', gap: '12px', alignItems: 'center' }}>
                             <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', paddingLeft: '8px' }}>GROUPING:</span>
@@ -462,7 +460,7 @@ export default function ProjectView() {
                     </>
                 )}
 
-                {activeTab === 'logs' && (
+                {activeTab !== 'subdomains' && activeTab === 'logs' && (
                     <div className="glass-panel" style={{ flex: 1, padding: '12px 24px', display: 'flex', alignItems: 'center', gap: '16px' }}>
                         <span style={{ fontSize: '0.9rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>Custom Header:</span>
                         <input
@@ -479,7 +477,14 @@ export default function ProjectView() {
             </div>
 
             <div style={{ display: 'flex', gap: '32px', flex: 1, minHeight: 0 }}>
-                {activeTab === 'logs' ? (
+                {activeTab === 'subdomains' ? (
+                    <SubdomainSection
+                        projectId={id}
+                        target={project.target}
+                        customHeader={customHeader}
+                        socketRef={socketRef}
+                    />
+                ) : activeTab === 'logs' ? (
                     <div className="glass-panel" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                         <div style={{ padding: '16px', borderBottom: '1px solid var(--panel-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
@@ -747,8 +752,8 @@ export default function ProjectView() {
                     </div>
                 )}
 
-                {/* Quick Results Summary Sidebar */}
-                <div style={{ width: '300px', display: 'flex', flexDirection: 'column', gap: '20px', overflowY: 'auto' }}>
+                {/* Quick Results Summary Sidebar — hidden on Subdomains tab */}
+                {activeTab !== 'subdomains' && <div style={{ width: '300px', display: 'flex', flexDirection: 'column', gap: '20px', overflowY: 'auto' }}>
                     <div className="glass-panel" style={{ padding: '20px', display: 'flex', alignItems: 'center', gap: '16px' }}>
                         <Cpu size={24} color="var(--accent-color)" />
                         <div>
@@ -772,7 +777,7 @@ export default function ProjectView() {
                             <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Vulns & Secrets</div>
                         </div>
                     </div>
-                </div>
+                </div>}
             </div>
 
             {/* Code Viewer Modal */}

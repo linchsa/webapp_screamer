@@ -175,7 +175,7 @@ function DomainResults({ projectId, domain, visible }) {
 }
 
 // ─── Main component ───────────────────────────────────────────────────────────
-export default function SubdomainSection({ projectId, target, customHeader, socketRef }) {
+export default function SubdomainSection({ projectId, target, customHeader, socketRef, onJumpToIntel }) {
     const [scanActive, setScanActive]     = useState(false);
     const [logs, setLogs]                 = useState([]);
     const [subdomains, setSubdomains]     = useState([]);
@@ -324,6 +324,7 @@ export default function SubdomainSection({ projectId, target, customHeader, sock
                     socketRef={socketRef}
                     wpscanKey={wpscanKey}
                     onClose={() => setModalDomain(null)}
+                    onViewResults={() => { setModalDomain(null); onJumpToIntel(); }}
                 />
             )}
 
@@ -481,6 +482,14 @@ export default function SubdomainSection({ projectId, target, customHeader, sock
                                                                 style={{ padding: '3px 8px', fontSize: '0.68rem', display: 'flex', alignItems: 'center', gap: '3px', color: 'var(--accent-color)', borderColor: 'rgba(0,255,157,0.3)' }}
                                                             >
                                                                 <Target size={11} /> Scan
+                                                            </button>
+                                                            <button
+                                                                className="glass-btn"
+                                                                onClick={onJumpToIntel}
+                                                                title="Open Intel Dashboard"
+                                                                style={{ padding: '3px 6px', color: 'var(--accent-color)' }}
+                                                            >
+                                                                <Database size={11} />
                                                             </button>
                                                             <button
                                                                 className="glass-btn"

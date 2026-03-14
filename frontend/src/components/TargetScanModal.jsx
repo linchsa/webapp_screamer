@@ -10,7 +10,7 @@ const MODULES = [
     { id: 'wpscan',     label: 'WordPress Audit (WPScan)', icon: <Globe size={15} />,   color: '#f97316', desc: 'Requires WPScan API key in Settings' },
 ];
 
-export default function TargetScanModal({ domain, isWordpress, projectId, customHeader, socketRef, onClose, wpscanKey }) {
+export default function TargetScanModal({ domain, isWordpress, projectId, customHeader, socketRef, onClose, onViewResults, wpscanKey }) {
     const [selected, setSelected] = useState(() => {
         const defaults = ['waf', 'ports', 'js_secrets', 'endpoints', 'tech'];
         if (isWordpress) defaults.push('wpscan');
@@ -70,7 +70,7 @@ export default function TargetScanModal({ domain, isWordpress, projectId, custom
     return (
         // Backdrop
         <div
-            onClick={(e) => e.target === e.currentTarget && !scanning && onClose()}
+            onClick={(e) => e.target === e.currentTarget && onClose()}
             style={{
                 position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)',
                 backdropFilter: 'blur(6px)', display: 'flex', alignItems: 'center',
@@ -97,7 +97,7 @@ export default function TargetScanModal({ domain, isWordpress, projectId, custom
                             {domain}
                         </code>
                     </div>
-                    <button className="glass-btn" onClick={onClose} disabled={scanning} style={{ padding: '4px' }}>
+                    <button className="glass-btn" onClick={onClose} style={{ padding: '4px' }}>
                         <X size={18} />
                     </button>
                 </div>
@@ -180,7 +180,7 @@ export default function TargetScanModal({ domain, isWordpress, projectId, custom
                     {finished && !scanning && (
                         <button
                             className="glass-btn primary"
-                            onClick={onClose}
+                            onClick={onViewResults}
                             style={{ padding: '10px 18px', fontWeight: 700 }}
                         >
                             View Results

@@ -70,7 +70,7 @@ if has_module "js_secrets"; then
     echo "[NUCLEI] Scanning for exposed keys & tokens..."
     if [ "$JS_COUNT" -gt 0 ]; then
         nuclei -l "$PROJECT_DIR/js_urls.txt" -tags "exposure,token" -silent -nc \
-            -json -o "$PROJECT_DIR/nuclei_secrets.json" 2>/dev/null || true
+            -j -o "$PROJECT_DIR/nuclei_secrets.json" 2>/dev/null || true
     fi
     echo "[JS SECRETS] Secret scanning complete."
 fi
@@ -98,7 +98,7 @@ fi
 if has_module "tech"; then
     echo "[NUCLEI] Running technology fingerprint scan on $DOMAIN..."
     echo "https://$DOMAIN" | nuclei -tags "tech,cms,panel,config" -silent -nc \
-        -json -o "$PROJECT_DIR/tech.json" 2>/dev/null || true
+        -j -o "$PROJECT_DIR/tech.json" 2>/dev/null || true
     echo "[TECH] Fingerprinting complete."
 fi
 

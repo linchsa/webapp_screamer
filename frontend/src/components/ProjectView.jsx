@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Play, Square, Terminal, Network, ShieldAlert, Cpu, Download, Trash2, List, TableProperties, Eye, X, Database, Flame, Camera, Globe } from 'lucide-react';
 import io from 'socket.io-client';
 import SubdomainSection from './SubdomainSection';
+import SubdomainDashboard from './SubdomainDashboard';
 
 const API_URL = 'http://localhost:3000';
 
@@ -344,6 +345,7 @@ export default function ProjectView() {
                         { key: 'subdomains', icon: <Globe size={16} />,          label: 'Subdomains' },
                         { key: 'logs',       icon: <List size={16} />,            label: 'Live Logs' },
                         { key: 'results',    icon: <TableProperties size={16} />, label: 'Discovery Results' },
+                        { key: 'intel',      icon: <Database size={16} />,        label: 'Intelligence' },
                         { key: 'api',        icon: <Cpu size={16} />,             label: 'API Inventory' },
                         { key: 'map',        icon: <Network size={16} />,         label: 'Target Map' },
                     ].map(tab => (
@@ -483,7 +485,10 @@ export default function ProjectView() {
                         target={project.target}
                         customHeader={customHeader}
                         socketRef={socketRef}
+                        onJumpToIntel={() => setActiveTab('intel')}
                     />
+                ) : activeTab === 'intel' ? (
+                    <SubdomainDashboard projectId={id} />
                 ) : activeTab === 'logs' ? (
                     <div className="glass-panel" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                         <div style={{ padding: '16px', borderBottom: '1px solid var(--panel-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>

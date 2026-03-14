@@ -95,6 +95,8 @@ export default function ProjectView() {
             setProject(data);
             setCustomHeader(data.header || '');
 
+            // Fetch Findings
+            const findRes = await fetch(`${API_URL}/api/projects/${id}/findings`);
             if (findRes.ok) {
                 const findData = await findRes.json();
                 if (Array.isArray(findData)) {
@@ -103,15 +105,15 @@ export default function ProjectView() {
                         try {
                             if (typeof ctx === 'string') ctx = JSON.parse(ctx);
                         } catch (e) {}
-                        return { ...f, contextObj: ctx };
+                        return { ...f, contextObj: ctx || {} };
                     });
                     setFindings(processed);
                     
                     // Update stats
-                    const subdomains = new Set(processed.map(f => f.domain)).size;
-                    const ports = processed.filter(f => f.type === 'port').length;
-                    const vulns = processed.filter(f => f.severity === 'critical' || f.severity === 'high').length;
-                    setStats({ subdomains, ports, vulns });
+                    const subdomainsCount = new Set(processed.filter(f => f.domain).map(f => f.domain)).size;
+                    const portsCount = processed.filter(f => f.type === 'port').length;
+                    const vulnsCount = processed.filter(f => f.severity === 'critical' || f.severity === 'high').length;
+                    setStats({ subdomains: subdomainsCount, ports: portsCount, vulns: vulnsCount });
                 }
             }
 
@@ -514,8 +516,9 @@ export default function ProjectView() {
                             }}
                         >
                             {logs.map((log, i) => {
-                                const isError = log.includes('[ERR]') || log.toLowerCase().includes('error');
-                                return <div key={i} style={{ color: isError ? 'var(--danger-color)' : 'inherit' }}>{log}</div>;
+                                const logStr = String(log);
+                                const isError = logStr.includes('[ERR]') || logStr.toLowerCase().includes('error');
+                                return <div key={i} style={{ color: isError ? 'var(--danger-color)' : 'inherit' }}>{logStr}</div>;
                             })}
                         </div>
                     </div>

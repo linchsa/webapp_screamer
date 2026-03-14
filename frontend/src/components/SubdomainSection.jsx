@@ -371,8 +371,9 @@ export default function SubdomainSection({ projectId, target, customHeader, sock
                 <div className="glass-panel" style={{ flexShrink: 0, height: '120px', display: 'flex', flexDirection: 'column' }}>
                     <div ref={termRef} style={{ flex: 1, overflowY: 'auto', padding: '8px 12px', fontFamily: 'var(--font-mono)', fontSize: '0.75rem', background: 'rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column', gap: '2px' }}>
                         {logs.map((log, i) => {
-                            const color = log.includes('[ERR]') ? '#ff4d4d' : log.includes('[SYSTEM]') ? '#a78bfa' : '#00ff9d';
-                            return <div key={i} style={{ color }}>{log}</div>;
+                            const logStr = String(log);
+                            const color = logStr.includes('[ERR]') ? '#ff4d4d' : logStr.includes('[SYSTEM]') ? '#a78bfa' : '#00ff9d';
+                            return <div key={i} style={{ color }}>{logStr}</div>;
                         })}
                     </div>
                 </div>

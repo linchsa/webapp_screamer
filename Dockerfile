@@ -6,7 +6,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 # --- 1. REPARACIÓN DE RED Y CERTIFICADOS ---
 # Usamos HTTP para el update inicial y asegurar que los certificados se actualicen sin errores SSL
 RUN echo "deb http://http.kali.org/kali kali-rolling main contrib non-free non-free-firmware" > /etc/apt/sources.list && \
-    apt-get update && \
+    echo "Acquire::https::Verify-Peer \"false\";" > /etc/apt/apt.conf.d/99verify-peer.conf && \
+    echo "Acquire::AllowInsecureRepositories \"true\";" >> /etc/apt/apt.conf.d/99verify-peer.conf && \
+    echo "Acquire::AllowUntrusted \"true\";" >> /etc/apt/apt.conf.d/99verify-peer.conf && \
+    apt-get update -y && \
     apt-get install -y --no-install-recommends ca-certificates && \
     update-ca-certificates
 

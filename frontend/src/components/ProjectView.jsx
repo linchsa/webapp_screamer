@@ -490,7 +490,7 @@ export default function ProjectView() {
                         onJumpToIntel={() => setActiveTab('intel')}
                     />
                 ) : activeTab === 'intel' ? (
-                    <SubdomainDashboard projectId={id} />
+                    <SubdomainDashboard projectId={id} socketRef={socketRef} />
                 ) : activeTab === 'logs' ? (
                     <div className="glass-panel" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                         <div style={{ padding: '16px', borderBottom: '1px solid var(--panel-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>

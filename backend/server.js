@@ -468,14 +468,19 @@ io.on('connection', (socket) => {
             cwd: path.join(__dirname)
         });
 
-        activeScans.set(scanKey, { projectId, target, scannerProcess, startTime: Date.now(), type: 'subdomain', projectDir });
+        activeScans.set(scanKey, { projectId, target, scannerProcess, startTime: Date.now(), type: 'subdomain', projectDir, logBuffer: [] });
 
-        scannerProcess.stdout.on('data', (chunk) => {
-            io.emit('subdomain-log', { projectId, log: chunk.toString().trim() });
-        });
-        scannerProcess.stderr.on('data', (chunk) => {
-            io.emit('subdomain-log', { projectId, log: `[ERR] ${chunk.toString().trim()}` });
-        });
+        const appendLog = (log) => {
+            const scan = activeScans.get(scanKey);
+            if (scan) {
+                scan.logBuffer.push(log);
+                if (scan.logBuffer.length > 100) scan.logBuffer.shift();
+            }
+            io.emit('subdomain-log', { projectId, log });
+        };
+
+        scannerProcess.stdout.on('data', (chunk) => appendLog(chunk.toString().trim()));
+        scannerProcess.stderr.on('data', (chunk) => appendLog(`[ERR] ${chunk.toString().trim()}`));
 
         scannerProcess.on('close', async (code) => {
             activeScans.delete(scanKey);
@@ -580,10 +585,19 @@ io.on('connection', (socket) => {
         const proc = spawn('bash', ['./scripts/targeted_scanner.sh', domain, header || '', projectDir, modulesCsv, wpscanKey || ''],
             { cwd: path.join(__dirname) });
 
-        activeScans.set(scanKey, { projectId, domain, scannerProcess: proc, startTime: Date.now(), type: 'targeted', projectDir });
+        activeScans.set(scanKey, { projectId, domain, scannerProcess: proc, startTime: Date.now(), type: 'targeted', projectDir, logBuffer: [] });
 
-        proc.stdout.on('data', chunk => io.emit('targeted-log', { projectId, domain, log: chunk.toString().trim() }));
-        proc.stderr.on('data', chunk => io.emit('targeted-log', { projectId, domain, log: `[ERR] ${chunk.toString().trim()}` }));
+        const appendTargetLog = (log) => {
+            const scan = activeScans.get(scanKey);
+            if (scan) {
+                scan.logBuffer.push(log);
+                if (scan.logBuffer.length > 100) scan.logBuffer.shift();
+            }
+            io.emit('targeted-log', { projectId, domain, log });
+        };
+
+        proc.stdout.on('data', chunk => appendTargetLog(chunk.toString().trim()));
+        proc.stderr.on('data', chunk => appendTargetLog(`[ERR] ${chunk.toString().trim()}`));
 
         proc.on('close', async (code) => {
             activeScans.delete(scanKey);
@@ -825,6 +839,53 @@ app.delete('/api/projects/:id', async (req, res) => {
 // the socket object, so we add it inside the existing connection handler.
 // The REST endpoint is registered here at module level.
 
+app.get('/api/projects/:id/scanned-targets', async (req, res) => {
+    try {
+        const { id } = req.params;
+        // Get domains that already have findings
+        const findingsRes = await dbRepo.query(
+            `SELECT DISTINCT domain FROM findings WHERE project_id = $1 AND type != 'subdomain_result'`, [id]
+        );
+        const scannedSet = new Set(findingsRes.rows.map(r => r.domain));
+
+        // Also include domains that are currently being scanned
+        for (const scan of activeScans.values()) {
+            if (scan.projectId == id) {
+                if (scan.type === 'targeted' && scan.domain) scannedSet.add(scan.domain);
+                // Discovery targets are usually the wildcard, but we care about deep scans here for visibility
+            }
+        }
+
+        // Get subdomain details for these domains
+        const subdomainsRes = await dbRepo.query(
+            `SELECT domain, context, cdn_waf FROM findings 
+             WHERE project_id = $1 AND type = 'subdomain_result' AND domain = ANY($2)`,
+            [id, Array.from(scannedSet)]
+        );
+
+        const rows = subdomainsRes.rows.map(r => {
+            let ctx = r.context;
+            try { if (typeof ctx === 'string') ctx = JSON.parse(ctx); } catch(e) {}
+            
+            // Check if currently scanning
+            const isScanning = Array.from(activeScans.values()).some(s => s.projectId == id && s.domain === r.domain && s.type === 'targeted');
+            const scanInfo = isScanning ? Array.from(activeScans.values()).find(s => s.projectId == id && s.domain === r.domain && s.type === 'targeted') : null;
+
+            return { 
+                domain: r.domain, 
+                context: ctx, 
+                cdn_waf: r.cdn_waf, 
+                isScanning,
+                logBuffer: scanInfo?.logBuffer || []
+            };
+        });
+
+        res.json(rows);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 app.get('/api/projects/:id/subdomains', async (req, res) => {
     try {
         const result = await dbRepo.query(
@@ -934,6 +995,8 @@ app.get('/api/scans/active', (req, res) => {
         projectId: s.projectId,
         projectName: s.projectName,
         target: s.target,
+        domain: s.domain,
+        type: s.type,
         startTime: s.startTime,
         findingsSummary: s.findingsSummary
     }));

@@ -587,24 +587,43 @@ io.on('connection', (socket) => {
 
         activeScans.set(scanKey, { projectId, domain, scannerProcess: proc, startTime: Date.now(), type: 'targeted', projectDir, logBuffer: [] });
 
-        const appendTargetLog = (log) => {
+        const appendTargetLog = (rawChunk) => {
             const scan = activeScans.get(scanKey);
-            if (scan) {
-                scan.logBuffer.push(log);
+            if (!scan) return;
+
+            const lines = rawChunk.split('\n');
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed) continue;
+
+                scan.logBuffer.push(trimmed);
                 if (scan.logBuffer.length > 100) scan.logBuffer.shift();
 
-                // Check for Module Completion Signal
-                const moduleMatch = log.match(/\[SYSTEM\] MODULE_COMPLETE: (\w+)/);
+                // 1. Detect Nuclei JSON findings for real-time secrets
+                if (trimmed.startsWith('{') && trimmed.includes('"template-id"')) {
+                    try {
+                        const result = JSON.parse(trimmed);
+                        saveFinding(projectId, domain, 'js_secret', result['matched-at'] || result.host || '', {
+                            template: result['template-id'] || '', name: result.info?.name || '',
+                            url: result['matched-at'] || '', matcher: result['matcher-name'] || ''
+                        }, result.info?.severity || 'medium').then(() => {
+                            io.emit('domain-results-updated', { projectId, domain, module: 'js_secrets' });
+                        });
+                    } catch(e) {}
+                }
+
+                // 2. Detect Module Completion
+                const moduleMatch = trimmed.match(/\[SYSTEM\] MODULE_COMPLETE: (\w+)/);
                 if (moduleMatch) {
                     const module = moduleMatch[1];
                     parseModuleResults(module, projectId, domain, projectDir).catch(console.error);
                 }
             }
-            io.emit('targeted-log', { projectId, domain, log });
+            io.emit('targeted-log', { projectId, domain, log: rawChunk });
         };
 
-        proc.stdout.on('data', chunk => appendTargetLog(chunk.toString().trim()));
-        proc.stderr.on('data', chunk => appendTargetLog(`[ERR] ${chunk.toString().trim()}`));
+        proc.stdout.on('data', chunk => appendTargetLog(chunk.toString()));
+        proc.stderr.on('data', chunk => appendTargetLog(`[ERR] ${chunk.toString()}`));
 
         proc.on('close', async (code) => {
             activeScans.delete(scanKey);
@@ -981,7 +1000,7 @@ async function parseModuleResults(module, projectId, domain, projectDir) {
                         }
                     }
                 }
-                const nucleiSecretsFile = path.join(projectDir, 'nuclei_secrets.json');
+                const nucleiSecretsFile = path.join(projectDir, 'nuclei_secrets_live.json');
                 if (fs.existsSync(nucleiSecretsFile)) {
                     const results = safeJsonLines(nucleiSecretsFile);
                     for (const r of results) {

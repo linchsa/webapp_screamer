@@ -24,6 +24,7 @@ RUN apt-get update --fix-missing && apt-get install -y --no-install-recommends \
     libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 \
     libxrandr2 libgbm1 libasound2t64 gnupg libpcap-dev \
     postgresql postgresql-contrib libpq-dev \
+    nmap ruby-full \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Instalación de Go 1.25.7 (Versión requerida por las últimas herramientas de ProjectDiscovery)
@@ -49,7 +50,8 @@ RUN go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest 
 # Otras herramientas esenciales
 RUN go install -v github.com/lc/gau/v2/cmd/gau@latest && \
     go install -v github.com/tomnomnom/waybackurls@latest && \
-    go install -v github.com/tomnomnom/gf@latest
+    go install -v github.com/tomnomnom/gf@latest && \
+    go install -v github.com/zricethezav/gitleaks/v8@latest
 
 # --- 5. PLAYWRIGHT Y NODE ---
 RUN curl -fsSL http://deb.nodesource.com/setup_20.x | bash - && \
@@ -65,6 +67,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN npx playwright install chromium
+
+# Instalamos WPScan (requiere Ruby instalado previamente)
+RUN gem install wpscan
 
 WORKDIR /app
 EXPOSE 3000

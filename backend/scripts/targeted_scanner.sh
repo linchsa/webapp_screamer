@@ -35,47 +35,42 @@ fi
 if has_module "ports"; then
     echo "[NMAP] Starting intensive port scan on $DOMAIN..."
     # Intensive flags: -sV -sC -Pn -T3 --top-ports 1000 --open --reason
-    nmap -sV -sC -Pn -T3 --top-ports 1000 --open --reason "$DOMAIN" -oJ "$PROJECT_DIR/ports.json" -oN "$PROJECT_DIR/ports.txt" 2>/dev/null || true
+    nmap -sV -sC -Pn -T3 --top-ports 1000 --open --reason "$DOMAIN" -oJ "$PROJECT_DIR/ports.json" -oN "$PROJECT_DIR/ports.txt" || echo "[ERR] Nmap execution failed or returned error."
     echo "[NMAP] Port scan complete."
     echo "[SYSTEM] MODULE_COMPLETE: ports"
 fi
 
 # ─── MODULE: JS SECRETS ──────────────────────────────────────────────────────
 if has_module "js_secrets"; then
-    echo "[KATANA] Crawling JS files on $DOMAIN..."
+    echo "[KATANA] Starting live JS crawl and secret scanning on $DOMAIN..."
     mkdir -p "$PROJECT_DIR/assets"
-    # Intensive flags: -jc -jsl -depth 5 -automatic-form-fill -concurrency 10
     KATANA_ARGS="-silent -jc -jsl -depth 5 -automatic-form-fill -concurrency 10"
+    
+    # Real-time pipeline: Katana finds JS -> Nuclei scans for exposure -> Results piped to log
+    echo "[SYSTEM] LIVE_JS_SCAN_START"
     if [ -n "$HEADER" ]; then
-        echo "https://$DOMAIN" | katana $KATANA_ARGS -H "$HEADER" 2>/dev/null \
-            | grep -E "\.js$" | sort -u > "$PROJECT_DIR/js_urls.txt" || true
+        echo "https://$DOMAIN" | katana $KATANA_ARGS -H "$HEADER" 2>/dev/null | grep -E "\.js$" | tee "$PROJECT_DIR/js_urls.txt" | nuclei -tags "exposure,token" -silent -nc -j -o "$PROJECT_DIR/nuclei_secrets_live.json" || true
     else
-        echo "https://$DOMAIN" | katana $KATANA_ARGS 2>/dev/null \
-            | grep -E "\.js$" | sort -u > "$PROJECT_DIR/js_urls.txt" || true
+        echo "https://$DOMAIN" | katana $KATANA_ARGS 2>/dev/null | grep -E "\.js$" | tee "$PROJECT_DIR/js_urls.txt" | nuclei -tags "exposure,token" -silent -nc -j -o "$PROJECT_DIR/nuclei_secrets_live.json" || true
     fi
-    JS_COUNT=$(wc -l < "$PROJECT_DIR/js_urls.txt" 2>/dev/null || echo 0)
-    echo "[KATANA] Found $JS_COUNT JS files. Downloading for analysis..."
 
-    # Download JS files
+    JS_COUNT=$(wc -l < "$PROJECT_DIR/js_urls.txt" 2>/dev/null || echo 0)
+    echo "[KATANA] Crawl complete. $JS_COUNT JS files found. Performing deeper Gitleaks analysis..."
+
+    # Download JS files for Gitleaks (static backup)
     if [ "$JS_COUNT" -gt 0 ]; then
         while IFS= read -r url; do
             fname=$(echo "$url" | md5sum | cut -d' ' -f1).js
             HEADER_ARG=""
             [ -n "$HEADER" ] && HEADER_ARG="-H \"$HEADER\""
-            curl -sk $HEADER_ARG -o "$PROJECT_DIR/assets/$fname" "$url" 2>/dev/null || true
+            curl -sk $HEADER_ARG --max-time 10 -o "$PROJECT_DIR/assets/$fname" "$url" 2>/dev/null || true
         done < "$PROJECT_DIR/js_urls.txt"
+        
+        echo "[GITLEAKS] Scanning downloaded assets..."
+        gitleaks detect --no-git --source="$PROJECT_DIR/assets" --report-format=json \
+            --report-path="$PROJECT_DIR/secrets.json" -q 2>/dev/null || true
     fi
 
-    # Scan with gitleaks
-    echo "[GITLEAKS] Scanning for secrets..."
-    gitleaks detect --no-git --source="$PROJECT_DIR/assets" --report-format=json \
-        --report-path="$PROJECT_DIR/secrets.json" -q 2>/dev/null || true
-    # Also scan with nuclei exposure templates
-    echo "[NUCLEI] Scanning for exposed keys & tokens..."
-    if [ "$JS_COUNT" -gt 0 ]; then
-        nuclei -l "$PROJECT_DIR/js_urls.txt" -tags "exposure,token" -silent -nc \
-            -j -o "$PROJECT_DIR/nuclei_secrets.json" 2>/dev/null || true
-    fi
     echo "[JS SECRETS] Secret scanning complete."
     echo "[SYSTEM] MODULE_COMPLETE: js_secrets"
 fi

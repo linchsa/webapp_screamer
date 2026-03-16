@@ -51,7 +51,7 @@ export default function SubdomainDashboard({ projectId, socketRef }) {
                     });
                     setScanLogs(prev => ({ ...prev, ...initialLogs }));
 
-                    if (sorted.length > 0 && !selectedDomain) setSelectedDomain(sorted[0].domain);
+                    if (sorted.length > 0) setSelectedDomain(curr => curr || sorted[0].domain);
                 })
                 .catch(console.error);
         };

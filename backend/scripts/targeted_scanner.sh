@@ -34,9 +34,9 @@ fi
 # ─── MODULE: PORT SCAN ───────────────────────────────────────────────────────
 if has_module "ports"; then
     echo "[NMAP] Starting intensive port scan on $DOMAIN..."
-    # Intensive flags: -sV -sC -Pn -T3 --top-ports 1000 --open --reason
+    # Intensive and Verbose flags: -sV -sC -Pn -n -T4 -v --stats-every 10s --top-ports 1000 --open --reason
     # -oX: XML for backend parsing, -oN: Normal output for persistent terminal logs
-    nmap -sV -sC -Pn -T3 --top-ports 1000 --open --reason "$DOMAIN" -oX "$PROJECT_DIR/ports.xml" -oN "$PROJECT_DIR/ports.txt" || echo "[ERR] Nmap execution failed or returned error."
+    nmap -sV -sC -Pn -n -T4 -v --stats-every 10s --top-ports 1000 --open --reason "$DOMAIN" -oX "$PROJECT_DIR/ports.xml" -oN "$PROJECT_DIR/ports.txt" || echo "[ERR] Nmap execution failed or returned error."
     echo "[NMAP] Port scan complete."
     echo "[SYSTEM] MODULE_COMPLETE: ports"
 fi
@@ -47,12 +47,13 @@ if has_module "js_secrets"; then
     mkdir -p "$PROJECT_DIR/assets"
     KATANA_ARGS="-silent -jc -jsl -depth 5 -automatic-form-fill -concurrency 10"
     
-    # Real-time pipeline: Katana finds JS -> Nuclei scans for exposure -> Results piped to log
+    # Real-time pipeline: Katana finds URLs -> Awk counts & filters JS -> Nuclei scans JS
     echo "[SYSTEM] LIVE_JS_SCAN_START"
+    KATANA_AWK='{ count++; if(count%50==0) { print "[KATANA] Progress: " count " URLs discovered so far..."; fflush(); } if($0 ~ /\.js$/) { print $0; fflush(); } }'
     if [ -n "$HEADER" ]; then
-        echo "https://$DOMAIN" | katana $KATANA_ARGS -H "$HEADER" 2>/dev/null | grep -E "\.js$" | tee "$PROJECT_DIR/js_urls.txt" | nuclei -tags "exposure,token" -silent -nc -j -o "$PROJECT_DIR/nuclei_secrets_live.json" || true
+        echo "https://$DOMAIN" | katana $KATANA_ARGS -H "$HEADER" 2>/dev/null | awk "$KATANA_AWK" | tee "$PROJECT_DIR/js_urls.txt" | nuclei -tags "exposure,token" -silent -nc -j -o "$PROJECT_DIR/nuclei_secrets_live.json" || true
     else
-        echo "https://$DOMAIN" | katana $KATANA_ARGS 2>/dev/null | grep -E "\.js$" | tee "$PROJECT_DIR/js_urls.txt" | nuclei -tags "exposure,token" -silent -nc -j -o "$PROJECT_DIR/nuclei_secrets_live.json" || true
+        echo "https://$DOMAIN" | katana $KATANA_ARGS 2>/dev/null | awk "$KATANA_AWK" | tee "$PROJECT_DIR/js_urls.txt" | nuclei -tags "exposure,token" -silent -nc -j -o "$PROJECT_DIR/nuclei_secrets_live.json" || true
     fi
 
     JS_COUNT=$(wc -l < "$PROJECT_DIR/js_urls.txt" 2>/dev/null || echo 0)
@@ -80,12 +81,13 @@ fi
 if has_module "endpoints"; then
     echo "[ENDPOINTS] Crawling $DOMAIN for API endpoints..."
     KATANA_ARGS="-silent -jc -jsl -depth 5 -automatic-form-fill -concurrency 10"
+    KATANA_AWK_EP='{ count++; if(count%50==0) { print "[KATANA] Progress: " count " URLs discovered so far..."; fflush(); } print $0; fflush(); }'
     if [ -n "$HEADER" ]; then
         echo "https://$DOMAIN" | katana $KATANA_ARGS -H "$HEADER" 2>/dev/null \
-            > "$PROJECT_DIR/katana_urls.txt" || true
+            | awk "$KATANA_AWK_EP" > "$PROJECT_DIR/katana_urls.txt" || true
     else
         echo "https://$DOMAIN" | katana $KATANA_ARGS 2>/dev/null \
-            > "$PROJECT_DIR/katana_urls.txt" || true
+            | awk "$KATANA_AWK_EP" > "$PROJECT_DIR/katana_urls.txt" || true
     fi
     # Fetch historical URLs from gau
     echo "[GAU] Fetching historical URLs..."

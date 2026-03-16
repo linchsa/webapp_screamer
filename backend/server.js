@@ -610,11 +610,12 @@ io.on('connection', (socket) => {
             if (trimmed.startsWith('{') && trimmed.includes('"template-id"')) {
                 try {
                     const result = JSON.parse(trimmed);
-                    saveFinding(projectId, domain, 'js_secret', result['matched-at'] || result.host || '', {
+                    const type = categorizeNucleiResult(result);
+                    saveFinding(projectId, domain, type, result['matched-at'] || result.host || '', {
                         template: result['template-id'] || '', name: result.info?.name || '',
                         url: result['matched-at'] || '', matcher: result['matcher-name'] || ''
                     }, result.info?.severity || 'medium').then(() => {
-                        io.emit('domain-results-updated', { projectId, domain, module: 'js_secrets' });
+                        io.emit('domain-results-updated', { projectId, domain, module: type === 'js_secret' ? 'js_secrets' : 'tech' });
                     });
                 } catch(e) {}
             }
@@ -969,20 +970,55 @@ const saveFinding = (projectId, domain, type, value, ctx, severity, cdnWaf) =>
                   VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING`,
         [projectId, domain, type, value, JSON.stringify(ctx), severity || 'info', cdnWaf || null]).catch(() => {});
 
+const categorizeNucleiResult = (r) => {
+    const tid = (r['template-id'] || '').toLowerCase();
+    const tags = Array.isArray(r.info?.tags) ? r.info.tags.join(',') : (r.info?.tags || '').toLowerCase();
+    const name = (r.info?.name || '').toLowerCase();
+    
+    if (tid.includes('waf-detect') || tid.includes('akamai-detect') || tid.includes('cloudflare-detect') || name.includes('waf detection')) return 'waf';
+    if (tid.includes('detect') || tid.includes('fingerprint') || tags.includes('tech') || tags.includes('cms') || name.includes('detection')) return 'tech';
+    return 'js_secret';
+};
+
 async function parseModuleResults(module, projectId, domain, projectDir) {
     try {
         switch (module) {
             case 'waf': {
                 const wafHttpxFile = path.join(projectDir, 'waf_httpx.json');
+                const wafCdnFile = path.join(projectDir, 'waf.json');
+                
+                let detectedWaf = null;
+
+                // 1. Try cdncheck results
+                if (fs.existsSync(wafCdnFile)) {
+                    const cdnResults = safeJsonLines(wafCdnFile);
+                    for (const r of cdnResults) {
+                        if (r.cdn) detectedWaf = r.cdn_name || 'CDN Detected';
+                        if (r.waf) detectedWaf = r.waf_name || 'WAF Detected';
+                    }
+                }
+
+                // 2. Try httpx results (headers + tech)
                 if (fs.existsSync(wafHttpxFile)) {
                     const lines = safeJsonLines(wafHttpxFile);
                     for (const r of lines) {
                         const techList = Array.isArray(r.technologies) ? r.technologies : [];
-                        const cdnWaf = techList.find(t => /cloudflare|akamai|cloudfront|fastly|incapsula|sucuri|imperva/i.test(t)) || null;
-                        await saveFinding(projectId, domain, 'waf', cdnWaf || 'No WAF/CDN detected', {
+                        const server = (r.server || '').toLowerCase();
+                        const via = (r.via || '').toLowerCase();
+                        
+                        // Check tech list
+                        const cdnFromTech = techList.find(t => /cloudflare|akamai|cloudfront|fastly|incapsula|sucuri|imperva/i.test(t));
+                        if (cdnFromTech) detectedWaf = cdnFromTech;
+
+                        // Check headers (The user mentioned AkamaiGhost)
+                        if (server.includes('akamai') || server.includes('ghost')) detectedWaf = 'Akamai';
+                        else if (server.includes('cloudflare')) detectedWaf = 'Cloudflare';
+                        else if (via.includes('akamai') || via.includes('cloudfront')) detectedWaf = via.includes('akamai') ? 'Akamai' : 'CloudFront';
+
+                        await saveFinding(projectId, domain, 'waf', detectedWaf || 'No WAF/CDN detected', {
                             server: r.server || '', tech: techList.join(', '),
                             status: r.status_code, via: r.via || ''
-                        }, 'info', cdnWaf);
+                        }, 'info', detectedWaf);
                     }
                 }
                 break;
@@ -1004,6 +1040,16 @@ async function parseModuleResults(module, projectId, domain, projectDir) {
                             for (const p of portArr) {
                                 if (p.state?.[0]?.$?.state === 'open') {
                                     const service = p.service?.[0]?.$ || {};
+                                    const sName = (service.name || '').toLowerCase();
+                                    const sProd = (service.product || '').toLowerCase();
+                                    
+                                    // Cross-reference WAF from Nmap service strings
+                                    if (sProd.includes('akamai') || sProd.includes('ghost')) {
+                                        await saveFinding(projectId, domain, 'waf', 'Akamai', { source: 'nmap-service', product: service.product }, 'info', 'Akamai');
+                                    } else if (sProd.includes('cloudflare')) {
+                                        await saveFinding(projectId, domain, 'waf', 'Cloudflare', { source: 'nmap-service', product: service.product }, 'info', 'Cloudflare');
+                                    }
+
                                     await saveFinding(projectId, domain, 'port', `${p.$?.portid}/${p.$?.protocol}`, {
                                         service: service.name || '',
                                         version: `${service.product || ''} ${service.version || ''}`.trim(),
@@ -1045,7 +1091,8 @@ async function parseModuleResults(module, projectId, domain, projectDir) {
                 if (fs.existsSync(nucleiSecretsFile)) {
                     const results = safeJsonLines(nucleiSecretsFile);
                     for (const r of results) {
-                        await saveFinding(projectId, domain, 'js_secret', r['matched-at'] || r.host || '', {
+                        const type = categorizeNucleiResult(r);
+                        await saveFinding(projectId, domain, type, r['matched-at'] || r.host || '', {
                             template: r['template-id'] || '', name: r.info?.name || '',
                             url: r['matched-at'] || ''
                         }, r.info?.severity || 'medium');
